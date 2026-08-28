@@ -60,7 +60,9 @@ Sistema full-stack para análise de patologias em pavimentos asfálticos de rodo
 
 ## Detecções de Patologias
 
-O sistema detecta e classifica as seguintes patologias:
+### Detecção automática
+
+O sistema detecta automaticamente as seguintes patologias:
 
 | Código | Patologia |
 |---|---|
@@ -68,6 +70,13 @@ O sistema detecta e classifica as seguintes patologias:
 | J / JE | Couro de jacaré (com/sem erosão) |
 | P | Panela |
 | R | Remendo |
+
+### Rotulagem manual
+
+As patologias abaixo não são detectadas automaticamente pelo sistema; elas podem ser marcadas manualmente no editor interativo quando necessário:
+
+| Código | Patologia |
+|---|---|
 | EX | Exsudação |
 | D | Desgaste |
 | A | Afundamento |
