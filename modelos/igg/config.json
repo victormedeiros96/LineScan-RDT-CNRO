@@ -1,0 +1,38 @@
+{
+  "nome": "Trincas e Panelas",
+  "modelos": [
+    {
+      "nome": "trincas",
+      "arquivo": "trincas.pt",
+      "classes": {
+        "0": "fc3",
+        "1": "couro_jacare"
+      },
+      "janela": [1024, 1024],
+      "stride": [512, 512]
+    },
+    {
+      "nome": "panelas",
+      "arquivo": "panela_remendo.pt",
+      "classes": {
+        "0": "panela",
+        "1": "remendo"
+      },
+      "janela": [4096, 4096],
+      "stride": [4096, 1024]
+    }
+  ],
+  "cores": {
+    "fc3": "#FFFF00",
+    "couro_jacare": "#00FF00",
+    "panela": "#FF0000",
+    "remendo": "#0000FF"
+  },
+  "input_shape": [1, 3, 640, 640],
+  "area_minima": {
+    "fc3": 500,
+    "couro_jacare": 500,
+    "panela": 200,
+    "remendo": 500
+  }
+}

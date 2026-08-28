@@ -1,0 +1,74 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: rdt01-redis
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: rdt01-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./modelos:/app/modelos:ro
+      - ./dados:/app/dados
+      - ./sources.json:/app/config/sources.json:ro
+    environment:
+      - MODELOS_DIR=/app/modelos
+      - DADOS_DIR=/app/dados
+      - SOURCES_CONFIG=/app/config/sources.json
+      - REDIS_URL=redis://redis:6379/0
+      - DEBUG=true
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    depends_on:
+      - redis
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: rdt01-worker
+    command: rq worker --url redis://redis:6379/0 rdt01-processing
+    volumes:
+      - ./modelos:/app/modelos:ro
+      - ./dados:/app/dados
+      - ./sources.json:/app/config/sources.json:ro
+    environment:
+      - MODELOS_DIR=/app/modelos
+      - DADOS_DIR=/app/dados
+      - SOURCES_CONFIG=/app/config/sources.json
+      - REDIS_URL=redis://redis:6379/0
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    depends_on:
+      - redis
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: rdt01-frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
