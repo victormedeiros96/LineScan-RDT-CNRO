@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import type { WheelEvent, PointerEvent, MouseEvent } from 'react'
-import { carregarAnalise, getConcatenadaUrl, salvarAnaliseEditada } from '../services/api'
+import { carregarAnalise, getConcatenadaUrl, getPreviewUrl, salvarAnaliseEditada } from '../services/api'
 import type { AnaliseResponse, Deteccao } from '../types'
 import { useAppStore } from '../store'
 
@@ -918,6 +918,32 @@ export function AnaliseView() {
                 )}
               </div>
             </div>
+
+            {/* Faixa de miniaturas das imagens do KM atual (preview leve) */}
+            {analise && currentKmImagesEdited.length > 0 && (
+              <div className="annotation-thumb-strip">
+                {currentKmImagesEdited.map((img) => {
+                  const ativo = img.arquivo === selectedImage
+                  const detCount = img.total_deteccoes ?? (img.deteccoes?.length ?? 0)
+                  return (
+                    <button
+                      key={img.arquivo}
+                      type="button"
+                      className={`annotation-thumb ${ativo ? 'ativo' : ''}`}
+                      onClick={() => setSelectedImage(img.arquivo)}
+                      title={`${img.arquivo}${img.km !== null ? ` · KM ${img.km.toFixed(3)}` : ''}`}
+                    >
+                      <img
+                        src={getPreviewUrl(analise.viagem, img.arquivo)}
+                        alt={img.arquivo}
+                        loading="lazy"
+                      />
+                      <span className="annotation-thumb-badge">{detCount}</span>
+                    </button>
+                  )
+                })}
+              </div>
+            )}
 
             <div className="annotation-body">
               {/* Canvas */}
