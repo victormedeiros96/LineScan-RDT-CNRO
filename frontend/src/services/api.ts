@@ -139,6 +139,10 @@ export function getConcatenadaUrl(viagemNome: string, arquivo: string): string {
   return `/api/pastas/faixa/${encodeURIComponent(viagemNome)}/${encodeURIComponent(arquivo)}`
 }
 
+export function getPreviewUrl(viagemNome: string, arquivo: string): string {
+  return `/api/pastas/faixa/${encodeURIComponent(viagemNome)}/${encodeURIComponent(arquivo)}/preview`
+}
+
 export async function executarInferencia(
   viagemNome: string,
   tipoModelo = 'igg',

@@ -193,6 +193,7 @@ export function AnaliseView() {
   const dragWindowRef = useRef<((ev: globalThis.PointerEvent) => void) | null>(null)
   const dragUpRef = useRef<((ev: globalThis.PointerEvent) => void) | null>(null)
   const dragCancelRef = useRef<((ev: globalThis.PointerEvent) => void) | null>(null)
+  const imgCacheRef = useRef<Map<string, HTMLImageElement>>(new Map())
 
   const [imgSize, setImgSize] = useState<{ w: number; h: number } | null>(null)
 
@@ -339,15 +340,53 @@ export function AnaliseView() {
   // Recarrega a imagem sempre que `selected` muda
   useEffect(() => {
     if (!selected || !selected.existe_imagem || !analise) return
-    const img    = new Image()
-    img.crossOrigin = 'anonymous'
-    img.src      = getConcatenadaUrl(analise.viagem, selected.arquivo)
+    const url     = getConcatenadaUrl(analise.viagem, selected.arquivo)
+    const cacheada = imgCacheRef.current.get(url)
+    const img     = cacheada ?? new Image()
+    if (!cacheada) {
+      img.crossOrigin = 'anonymous'
+      img.src = url
+      imgCacheRef.current.set(url, img)
+    }
     imgRef.current = img
-    img.onload   = () => {
+    if (img.complete && img.naturalWidth > 0) {
       setImgSize({ w: img.naturalWidth, h: img.naturalHeight })
       drawCanvas()
+    } else {
+      img.onload = () => {
+        setImgSize({ w: img.naturalWidth, h: img.naturalHeight })
+        drawCanvas()
+      }
     }
-  }, [selected, analise, drawCanvas])
+
+    // Preload das faixas vizinhas (mesmo KM): mantém as imagens em cache para
+    // que o navegador faça o download antecipado (aproveitando o ETag/304)
+    // ao navegar entre imagens — sem flash de loading.
+    const preloadVizinhas = () => {
+      if (!analise) return
+      const idx = allImages.findIndex((i) => i.arquivo === selectedImage)
+      if (idx < 0) return
+      const visinhas = [idx - 1, idx + 1]
+        .filter((i) => i >= 0 && i < allImages.length)
+        .map((i) => allImages[i].arquivo)
+      visinhas.forEach((arquivo) => {
+        const u = getConcatenadaUrl(analise.viagem, arquivo)
+        if (imgCacheRef.current.has(u)) return
+        const p = new Image()
+        p.crossOrigin = 'anonymous'
+        p.src = u
+        imgCacheRef.current.set(u, p)
+      })
+      // Mantém o cache limitado (não acumular centenas de PNGs de 21MB)
+      const MAX_CACHE = 16
+      const chaves = Array.from(imgCacheRef.current.keys())
+      if (chaves.length > MAX_CACHE) {
+        chaves.slice(0, chaves.length - MAX_CACHE).forEach((k) => imgCacheRef.current.delete(k))
+      }
+    }
+    const t = window.setTimeout(preloadVizinhas, 120)
+    return () => window.clearTimeout(t)
+  }, [selected, selectedImage, allImages, analise, drawCanvas])
 
   // Redesenha quando o zoom muda
   useEffect(() => { drawCanvas() }, [drawCanvas, zoom])

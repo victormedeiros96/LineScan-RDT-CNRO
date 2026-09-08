@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse
 from redis import Redis
 from rq import Queue
@@ -306,15 +306,90 @@ async def listar_faixas(viagem_nome: str, settings: Settings = Depends(get_setti
 
 
 @router.get("/faixa/{viagem_nome}/{arquivo}")
-async def servir_faixa(viagem_nome: str, arquivo: str, settings: Settings = Depends(get_settings_dep)):
-    """Serve uma faixa de 5m (PNG)."""
+async def servir_faixa(viagem_nome: str, arquivo: str, request: Request, settings: Settings = Depends(get_settings_dep)):
+    """Serve uma faixa de 5m (PNG). Com cache HTTP (ETag/Last-Modified) para o
+    navegador reutilizar o download ao navegar entre faixas."""
     base = _resolver_viagem(settings, viagem_nome)
     if base is None:
         raise HTTPException(404, "Viagem não encontrada")
     caminho = base / arquivo
     if not caminho.is_file():
         raise HTTPException(404, "Faixa não encontrada")
-    return FileResponse(str(caminho), media_type="image/png")
+    stat = caminho.stat()
+    etag = f'"{stat.st_mtime_ns:x}-{stat.st_size:x}"'
+    last_modified = stat.st_mtime
+    if etag == request.headers.get("if-none-match") or request.headers.get("if-modified-since") == _formato_http(last_modified):
+        return Response(status_code=304)
+    return FileResponse(
+        str(caminho),
+        media_type="image/png",
+        headers={
+            "Cache-Control": "public, max-age=86400",
+            "ETag": etag,
+            "Last-Modified": _formato_http(last_modified),
+        },
+    )
+
+
+def _formato_http(timestamp: float) -> str:
+    """Formata timestamp unix em HTTP-date (RFC 7231)."""
+    import email.utils
+    return email.utils.formatdate(timestamp, usegmt=True)
+
+
+PREVIEW_REDIS_KEY = "rdt01:preview:{}"
+PREVIEW_LRU_KEY = "rdt01:preview:lru"
+PREVIEW_LRU_MAX = 64  # ~64 previews de ~200KB ≈ 13MB de RAM
+
+@router.get("/faixa/{viagem_nome}/{arquivo}/preview")
+async def servir_preview_faixa(viagem_nome: str, arquivo: str, request: Request, settings: Settings = Depends(get_settings_dep)):
+    """Serve um preview JPEG (largura máx ~1024px) da faixa, cacheado no Redis
+    (LRU limitado). Navegação usa o preview; o PNG cheio só é pedido ao editar."""
+    base = _resolver_viagem(settings, viagem_nome)
+    if base is None:
+        raise HTTPException(404, "Viagem não encontrada")
+    caminho = base / arquivo
+    if not caminho.is_file():
+        raise HTTPException(404, "Faixa não encontrada")
+
+    r = _get_redis(settings)
+    chave = PREVIEW_REDIS_KEY.format(f"{viagem_nome}:{arquivo}")
+    dados = r.get(chave)
+
+    if dados is None:
+        import io as _io
+        import cv2 as _cv2
+        img = _cv2.imread(str(caminho))
+        if img is None:
+            raise HTTPException(500, "Não foi possível ler a faixa")
+        h, w = img.shape[:2]
+        max_w = 1024
+        if w > max_w:
+            escala = max_w / w
+            img = _cv2.resize(img, (max_w, int(h * escala)), interpolation=_cv2.INTER_AREA)
+        ok, buf = _cv2.imencode(".jpg", img, [_cv2.IMWRITE_JPEG_QUALITY, 82])
+        if not ok:
+            raise HTTPException(500, "Falha ao gerar preview")
+        dados = buf.tobytes()
+        r.set(chave, dados, ex=7 * 24 * 3600)  # TTL 7 dias
+
+        # Mantém LRU limitado: remove o mais antigo se exceder o máximo
+        r.rpush(PREVIEW_LRU_KEY, chave)
+        total = r.llen(PREVIEW_LRU_KEY)
+        if total > PREVIEW_LRU_MAX:
+            excedente = r.lrange(PREVIEW_LRU_KEY, 0, total - PREVIEW_LRU_MAX - 1)
+            for velho in excedente:
+                r.delete(velho)
+                r.lrem(PREVIEW_LRU_KEY, 0, velho)
+
+    etag = f'"{len(dados):x}-{arquivo[-8:]}"'
+    if etag == request.headers.get("if-none-match"):
+        return Response(status_code=304)
+    return Response(
+        content=dados,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "public, max-age=3600", "ETag": etag},
+    )
 
 
 @router.get("/meta/{viagem_nome}/{bloco_indice}")
