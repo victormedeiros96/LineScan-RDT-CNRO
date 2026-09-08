@@ -190,6 +190,9 @@ export function AnaliseView() {
     startY: number
     startBox: number[]
   }>({ active: false, index: -1, action: 'move', startX: 0, startY: 0, startBox: [] })
+  const dragWindowRef = useRef<((ev: globalThis.PointerEvent) => void) | null>(null)
+  const dragUpRef = useRef<((ev: globalThis.PointerEvent) => void) | null>(null)
+  const dragCancelRef = useRef<((ev: globalThis.PointerEvent) => void) | null>(null)
 
   const [imgSize, setImgSize] = useState<{ w: number; h: number } | null>(null)
 
@@ -574,7 +577,6 @@ export function AnaliseView() {
       const imagePoint = svgPointToImagePoint(point.x, point.y)
       boxDraftRef.current = { active: true, startX: imagePoint.x, startY: imagePoint.y, currentX: imagePoint.x, currentY: imagePoint.y }
       setDraftBox([imagePoint.x, imagePoint.y, imagePoint.x, imagePoint.y])
-      event.currentTarget.setPointerCapture(event.pointerId)
       return
     }
 
@@ -586,8 +588,63 @@ export function AnaliseView() {
       scrollLeft: shell.scrollLeft,
       scrollTop: shell.scrollTop,
     }
-    event.currentTarget.setPointerCapture(event.pointerId)
   }, [toolMode, zoom])
+
+  const aplicarDrag = useCallback((clientX: number, clientY: number) => {
+    if (!editDragRef.current.active) return
+    const point = { x: clientX, y: clientY }
+    // Converte client coords → svg, usando o mesmo getSvgPoint
+    const svg = svgRef.current
+    if (!svg) return
+    const rs = svg.getBoundingClientRect()
+    if (rs.width <= 0 || rs.height <= 0) return
+    const svgX = Math.max(0, Math.min(5120, (clientX - rs.left) * (5120 / rs.width)))
+    const svgY = Math.max(0, Math.min(4096, (clientY - rs.top) * (4096 / rs.height)))
+    const drag = editDragRef.current
+    const rect = boxToCanvasRect(drag.startBox)
+    const MIN = 12
+
+    let nextRect: { x: number; y: number; width: number; height: number }
+    if (drag.action === 'move') {
+      const dx = svgX - drag.startX
+      const dy = svgY - drag.startY
+      nextRect = { x: rect.x + dx, y: rect.y + dy, width: rect.width, height: rect.height }
+    } else {
+      const px = svgX
+      const py = svgY
+      if (drag.handle === 'nw') {
+        let x = px, y = py
+        let w = rect.x + rect.width - px
+        let h = rect.y + rect.height - py
+        if (w < MIN) { x = rect.x + rect.width - MIN; w = MIN }
+        if (h < MIN) { y = rect.y + rect.height - MIN; h = MIN }
+        nextRect = { x, y, width: w, height: h }
+      } else if (drag.handle === 'ne') {
+        let y = py
+        let w = px - rect.x
+        let h = rect.y + rect.height - py
+        if (w < MIN) { w = MIN }
+        if (h < MIN) { y = rect.y + rect.height - MIN; h = MIN }
+        nextRect = { x: rect.x, y, width: w, height: h }
+      } else if (drag.handle === 'sw') {
+        let x = px
+        let w = rect.x + rect.width - px
+        let h = py - rect.y
+        if (w < MIN) { x = rect.x + rect.width - MIN; w = MIN }
+        if (h < MIN) { h = MIN }
+        nextRect = { x, y: rect.y, width: w, height: h }
+      } else {
+        let w = px - rect.x
+        let h = py - rect.y
+        if (w < MIN) { w = MIN }
+        if (h < MIN) { h = MIN }
+        nextRect = { x: rect.x, y: rect.y, width: w, height: h }
+      }
+    }
+    const nextBox = canvasRectToBox(nextRect.x, nextRect.y, nextRect.width, nextRect.height)
+    setEditedDetections((current) => current.map((det, idx) => idx === drag.index ? { ...det, global_box: nextBox } : det))
+    void point
+  }, [])
 
   const handleSvgPointerMove = useCallback((event: PointerEvent<SVGSVGElement>) => {
     if (toolMode === 'box' && boxDraftRef.current.active) {
@@ -605,27 +662,9 @@ export function AnaliseView() {
       return
     }
 
-    if (editDragRef.current.active) {
-      const point = getSvgPoint(event)
-      if (!point) return
-      const drag = editDragRef.current
-      const dx = point.x - drag.startX
-      const dy = point.y - drag.startY
-      const rect = boxToCanvasRect(drag.startBox)
-      let nextRect = { ...rect }
-      if (drag.action === 'move') {
-        nextRect = { ...rect, x: rect.x + dx, y: rect.y + dy }
-      } else if (drag.handle === 'nw') {
-        nextRect = { x: rect.x + dx, y: rect.y + dy, width: rect.width - dx, height: rect.height - dy }
-      } else if (drag.handle === 'ne') {
-        nextRect = { x: rect.x + dx, y: rect.y, width: rect.width - dx, height: rect.height + dy }
-      } else if (drag.handle === 'sw') {
-        nextRect = { x: rect.x, y: rect.y + dy, width: rect.width + dx, height: rect.height - dy }
-      } else if (drag.handle === 'se') {
-        nextRect = { x: rect.x, y: rect.y, width: rect.width + dx, height: rect.height + dy }
-      }
-      const nextBox = canvasRectToBox(nextRect.x, nextRect.y, Math.max(12, nextRect.width), Math.max(12, nextRect.height))
-      setEditedDetections((current) => current.map((det, idx) => idx === drag.index ? { ...det, global_box: nextBox } : det))
+    if (dragWindowRef.current) {
+      // arrastos de move/resize são conduzidos pelos listeners do window
+      aplicarDrag(event.clientX, event.clientY)
       return
     }
 
@@ -634,34 +673,79 @@ export function AnaliseView() {
     if (!shell) return
     shell.scrollLeft = panRef.current.scrollLeft - (event.clientX - panRef.current.x)
     shell.scrollTop = panRef.current.scrollTop - (event.clientY - panRef.current.y)
-  }, [toolMode, zoom])
+  }, [toolMode, zoom, aplicarDrag])
 
-  const handleSvgPointerUp = useCallback((event: PointerEvent<SVGSVGElement>) => {
-    if (toolMode === 'box' && boxDraftRef.current.active) {
+  const finalizarDrag = useCallback(() => {
+    if (dragWindowRef.current) {
+      window.removeEventListener('pointermove', dragWindowRef.current)
+      dragWindowRef.current = null
+    }
+    if (dragUpRef.current) {
+      window.removeEventListener('pointerup', dragUpRef.current)
+      dragUpRef.current = null
+    }
+    if (dragCancelRef.current) {
+      window.removeEventListener('pointercancel', dragCancelRef.current)
+      dragCancelRef.current = null
+    }
+    if (boxDraftRef.current.active) {
       const box = [
         Math.min(boxDraftRef.current.startX, boxDraftRef.current.currentX),
         Math.min(boxDraftRef.current.startY, boxDraftRef.current.currentY),
         Math.max(boxDraftRef.current.startX, boxDraftRef.current.currentX),
         Math.max(boxDraftRef.current.startY, boxDraftRef.current.currentY),
-      ].map((value) => Math.round(value))
+      ].map((v) => Math.round(v))
       boxDraftRef.current.active = false
       setDraftBox(null)
-      event.currentTarget.releasePointerCapture(event.pointerId)
       if (box[2] - box[0] >= 12 && box[3] - box[1] >= 12) {
         setEditedDetections((current) => [...current, makeManualDetection(box)])
         setSelectedDetectionIndex(editedDetections.length)
       }
-      return
     }
     if (editDragRef.current.active) {
       editDragRef.current.active = false
-      event.currentTarget.releasePointerCapture(event.pointerId)
-      return
     }
-    if (!panRef.current.active) return
-    panRef.current.active = false
-    event.currentTarget.releasePointerCapture(event.pointerId)
-  }, [editedDetections.length, selectedClass, toolMode])
+    if (panRef.current.active) {
+      panRef.current.active = false
+    }
+  }, [makeManualDetection, editedDetections.length])
+
+  const iniciarDrag = useCallback((
+    event: PointerEvent<SVGElement>,
+    index: number,
+    action: 'move' | 'resize',
+    handle?: 'nw' | 'ne' | 'sw' | 'se',
+  ) => {
+    finalizarDrag()
+    if (event.button !== 0) return
+    const point = getSvgPoint(event)
+    if (!point) return
+    setSelectedDetectionIndex(index)
+    editDragRef.current = {
+      active: true,
+      index,
+      action,
+      handle,
+      startX: point.x,
+      startY: point.y,
+      startBox: [...editedDetections[index].global_box],
+    }
+    const mover = (ev: globalThis.PointerEvent) => aplicarDrag(ev.clientX, ev.clientY)
+    const parar = (ev: globalThis.PointerEvent) => { void ev; finalizarDrag() }
+    dragWindowRef.current = mover
+    dragUpRef.current = parar
+    dragCancelRef.current = parar
+    window.addEventListener('pointermove', mover)
+    window.addEventListener('pointerup', parar)
+    window.addEventListener('pointercancel', parar)
+  }, [finalizarDrag, aplicarDrag, editedDetections])
+
+  const handleSvgPointerUp = useCallback((event: PointerEvent<SVGSVGElement>) => {
+    void event
+    if (dragWindowRef.current || editDragRef.current.active || boxDraftRef.current.active || panRef.current.active) {
+      finalizarDrag()
+    }
+  }, [finalizarDrag])
 
   const handleBoxPointerDown = useCallback((event: PointerEvent<SVGElement>, index: number) => {
     event.stopPropagation()
@@ -699,17 +783,8 @@ export function AnaliseView() {
       lastClickRef.current = { x: point.x, y: point.y, t: Date.now() }
     }
 
-    setSelectedDetectionIndex(alvo)
-    editDragRef.current = {
-      active: true,
-      index: alvo,
-      action: 'move',
-      startX: point.x,
-      startY: point.y,
-      startBox: [...editedDetections[alvo].global_box],
-    }
-    svgRef.current?.setPointerCapture(event.pointerId)
-  }, [editedDetections, selectedDetectionIndex, toolMode])
+    iniciarDrag(event, alvo, 'move')
+  }, [editedDetections, selectedDetectionIndex, iniciarDrag])
 
   const handleBoxContextMenu = useCallback((event: MouseEvent<SVGElement>, index: number) => {
     event.preventDefault()
@@ -730,21 +805,10 @@ export function AnaliseView() {
 
   const handleHandlePointerDown = useCallback((event: PointerEvent<SVGElement>, index: number, handle: 'nw' | 'ne' | 'sw' | 'se') => {
     event.stopPropagation()
+    setClassMenu(null)
     if (event.button !== 0) return
-    const point = getSvgPoint(event)
-    if (!point) return
-    setSelectedDetectionIndex(index)
-    editDragRef.current = {
-      active: true,
-      index,
-      action: 'resize',
-      handle,
-      startX: point.x,
-      startY: point.y,
-      startBox: [...editedDetections[index].global_box],
-    }
-    svgRef.current?.setPointerCapture(event.pointerId)
-  }, [editedDetections])
+    iniciarDrag(event, index, 'resize', handle)
+  }, [iniciarDrag])
 
   // ── Selecionar faixa a partir de clique no grid
   const handleGridCellClick = useCallback((arquivo: string | null) => {

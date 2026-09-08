@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import cv2
@@ -171,55 +172,99 @@ class InferencePipeline:
         stride: list[int],
         global_masks: dict[int, np.ndarray],
         score_maps: dict[int, np.ndarray],
+        offsets_y: list[int] | None = None,
     ):
         ch, cw = crop_image.shape[:2]
         janela_w, janela_h = janela
         stride_x, stride_y = stride
 
-        for y in range(0, ch, stride_y):
+        posicoes_y = offsets_y if offsets_y is not None else list(range(0, ch, stride_y))
+
+        # Coleta apenas fatias de TAMANHO CHEIO da janela. Quando a janela
+        # ultrapassa o limite da imagem, a área descoberta já foi coberta pela
+        # janela anterior (que chega até a borda) — uma fatia parcial só repete
+        # região já analisada e geraria shapes mistos no batch (o Ultralytics
+        # estica shapes diferentes, alterando o conteúdo). Fatias parciais são
+        # portanto descartadas.
+        fatias: list[tuple[int, int, int, int, np.ndarray, int, int]] = []
+        for y in posicoes_y:
             for x in range(0, cw, stride_x):
-                y_end = min(y + janela_h, ch)
-                x_end = min(x + janela_w, cw)
+                y_end = y + janela_h
+                x_end = x + janela_w
+                if y_end > ch or x_end > cw:
+                    continue
                 slice_img = crop_image[y:y_end, x:x_end]
                 if slice_img.size == 0:
                     continue
+                fatias.append((y, y_end, x, x_end, slice_img, janela_h, janela_w))
 
-                if model.__class__.__module__.startswith("ultralytics"):
-                    result = model.predict(slice_img, imgsz=1024, conf=0.25, iou=0.45, verbose=False)[0]
-                    if result.boxes is None or result.masks is None:
-                        continue
-                    boxes = range(len(result.boxes))
-                    classes_iter = result.boxes.cls.cpu().numpy().astype(int)
-                    conf_iter = result.boxes.conf.cpu().numpy()
-                    masks_iter = result.masks.data.cpu().numpy()
-                else:
-                    res = model.predict(slice_img)
-                    if res.boxes is None or res.masks is None:
-                        continue
-                    boxes = range(len(res.boxes))
-                    classes_iter = [int(res.cls[i]) for i in boxes]
-                    conf_iter = [float(res.conf[i]) for i in boxes]
-                    masks_iter = [res.masks[i].cpu().numpy() for i in boxes]
+        if not fatias:
+            return
 
-                for mask_raw, cls_id, conf_val in zip(masks_iter, classes_iter, conf_iter):
-                    if cls_id not in global_masks:
-                        continue
-                    mask_np = (mask_raw > 0).astype(np.uint8) * 255
-                    sh, sw = mask_np.shape[:2]
-                    slice_h, slice_w = slice_img.shape[:2]
-                    if sh != slice_h or sw != slice_w:
-                        mask_np = cv2.resize(mask_np, (slice_w, slice_h), interpolation=cv2.INTER_NEAREST)
-                    mask_crop = mask_np[:slice_h, :slice_w]
-                    gy_start = offset_y + y
-                    gy_end = offset_y + y_end
-                    gx_start = x
-                    gx_end = x_end
-                    global_masks[cls_id][gy_start:gy_end, gx_start:gx_end] = np.maximum(
-                        global_masks[cls_id][gy_start:gy_end, gx_start:gx_end], mask_crop
+        def aplicar_deteccoes(masks_iter, classes_iter, conf_iter, slice_img, y, y_end, x, x_end, slice_h, slice_w):
+            for mask_raw, cls_id, conf_val in zip(masks_iter, classes_iter, conf_iter):
+                if cls_id not in global_masks:
+                    continue
+                mask_np = (mask_raw > 0).astype(np.uint8) * 255
+                sh, sw = mask_np.shape[:2]
+                if sh != slice_h or sw != slice_w:
+                    mask_np = cv2.resize(mask_np, (slice_w, slice_h), interpolation=cv2.INTER_NEAREST)
+                mask_crop = mask_np[:slice_h, :slice_w]
+                gy_start = offset_y + y
+                gy_end = offset_y + y_end
+                gx_start = x
+                gx_end = x_end
+                global_masks[cls_id][gy_start:gy_end, gx_start:gx_end] = np.maximum(
+                    global_masks[cls_id][gy_start:gy_end, gx_start:gx_end], mask_crop
+                )
+                mask_bool = mask_crop > 0
+                roi = score_maps[cls_id][gy_start:gy_end, gx_start:gx_end]
+                roi[mask_bool] = np.maximum(roi[mask_bool], float(conf_val))
+
+        if model.__class__.__module__.startswith("ultralytics"):
+            # Agrupa por dimensão (h, w) para lotes homogêneos. Como as fatias de
+            # um grupo têm SIZE e SHAPE idênticos, o Ultralytics NÃO estica/letterboxa
+            # nada (comprovado empiricamente), então todas podem ir no mesmo batch
+            # sem divergir do sequencial. Tetos evitam estouro de VRAM.
+            BATCH_MAX = 32
+            grupos: dict[tuple[int, int], list[tuple]] = {}
+            ordem: list[tuple[int, int]] = []
+            for f in fatias:
+                chave = (f[5], f[6])
+                if chave not in grupos:
+                    grupos[chave] = []
+                    ordem.append(chave)
+                grupos[chave].append(f)
+
+            for chave in ordem:
+                grupo = grupos[chave]
+                for inicio in range(0, len(grupo), BATCH_MAX):
+                    lote = grupo[inicio:inicio + BATCH_MAX]
+                    resultados = model.predict(
+                        [g[4] for g in lote],
+                        imgsz=1024, conf=0.25, iou=0.45, batch=len(lote), verbose=False,
                     )
-                    mask_bool = mask_crop > 0
-                    roi = score_maps[cls_id][gy_start:gy_end, gx_start:gx_end]
-                    roi[mask_bool] = np.maximum(roi[mask_bool], float(conf_val))
+                    for (y, y_end, x, x_end, slice_img, slice_h, slice_w), result in zip(lote, resultados):
+                        if result.boxes is None or result.masks is None:
+                            continue
+                        aplicar_deteccoes(
+                            result.masks.data.cpu().numpy(),
+                            result.boxes.cls.cpu().numpy().astype(int),
+                            result.boxes.conf.cpu().numpy(),
+                            slice_img, y, y_end, x, x_end, slice_h, slice_w,
+                        )
+        else:
+            for y, y_end, x, x_end, slice_img, slice_h, slice_w in fatias:
+                res = model.predict(slice_img)
+                if res.boxes is None or res.masks is None:
+                    continue
+                boxes = range(len(res.boxes))
+                aplicar_deteccoes(
+                    [res.masks[i].cpu().numpy() for i in boxes],
+                    [int(res.cls[i]) for i in boxes],
+                    [float(res.conf[i]) for i in boxes],
+                    slice_img, y, y_end, x, x_end, slice_h, slice_w,
+                )
 
     def _extract_polygons(
         self,
@@ -374,105 +419,129 @@ class InferencePipeline:
                 all_results = {}
 
         total = len(faixas)
+
+        # Filtra faixas que precisam ser processadas e prepara a leitura em
+        # paralelo (decode de PNG é CPU-bound e não segura o GIL — threads
+        # aceleram ~4x). O prefetch alimenta a GPU enquanto lemos as próximas.
+        pendentes: list[tuple[int, dict, Path]] = []
         for idx, faixa_meta in enumerate(faixas):
             arquivo_faixa = faixa_meta["arquivo"]
-            bloco = faixa_meta["_bloco"]
-
-            if progress_callback:
-                km_info = f"KM {faixa_meta.get('km_inicio', '?'):.3f}"
-                progress_callback(idx + 1, total, f"Analisando {arquivo_faixa} ({km_info})")
-
-            # Pula se já foi analisado
             if arquivo_faixa in all_results:
                 continue
-
-            # Lê a imagem de 5m
             faixa_path = self.input_folder / arquivo_faixa
             if not faixa_path.is_file():
                 continue
+            pendentes.append((idx, faixa_meta, faixa_path))
 
-            faixa_image = cv2.imread(str(faixa_path))
-            if faixa_image is None:
-                continue
+        READ_WORKERS = 4
+        READ_AHEAD = 8
 
-            H, W = faixa_image.shape[:2]
+        with ThreadPoolExecutor(max_workers=READ_WORKERS) as executor:
+            # Popula o prefetch inicial
+            futuras: dict[int, tuple[int, dict, Path]] = {}
+            for i in range(min(READ_AHEAD, len(pendentes))):
+                idx, faixa_meta, faixa_path = pendentes[i]
+                futuras[i] = (idx, faixa_meta, executor.submit(cv2.imread, str(faixa_path)))
 
-            # Downscale para resolução de inferência (4096×2560)
-            faixa_inference = cv2.resize(faixa_image, (IMAGE_WIDTH_PX, IMAGE_HEIGHT_INFERENCE), interpolation=cv2.INTER_LINEAR)
-            H_INF, W_INF = faixa_inference.shape[:2]
+            for pos, (idx, faixa_meta, _) in enumerate(pendentes):
+                faixa_path = pendentes[pos][2]
+                bloco = faixa_meta["_bloco"]
+                arquivo_faixa = faixa_meta["arquivo"]
 
-            all_masks: dict[str, dict[int, np.ndarray]] = {}
-            all_scores: dict[str, dict[int, np.ndarray]] = {}
-            model_y_scales: dict[str, float] = {}
+                if progress_callback:
+                    km_info = f"KM {faixa_meta.get('km_inicio', '?'):.3f}"
+                    progress_callback(idx + 1, total, f"Analisando {arquivo_faixa} ({km_info})")
 
-            for sm in self.sub_modelos:
-                nome = sm["nome"]
-                if nome not in self.models:
+                # Agenda a próxima leitura enquanto esta faixa é processada
+                prox = pos + READ_AHEAD
+                if prox < len(pendentes):
+                    n_idx, n_meta, n_path = pendentes[prox]
+                    futuras[prox] = (n_idx, n_meta, executor.submit(cv2.imread, str(n_path)))
+
+                faixa_image = futuras.pop(pos)[2].result()
+                if faixa_image is None:
                     continue
-                classes = sm["classes"]
-                janela = sm.get("janela", [1024, 1024])
-                stride = sm.get("stride", [512, 512])
 
-                if nome == "panelas":
-                    model_image = faixa_image
-                    y_scale = 1.0
-                else:
-                    model_image = faixa_inference
-                    y_scale = Y_SCALE
+                H, W = faixa_image.shape[:2]
 
-                H_MODEL, W_MODEL = model_image.shape[:2]
-                global_masks = {int(k): np.zeros((H_MODEL, W_MODEL), dtype=np.uint8) for k in classes}
-                score_maps = {int(k): np.zeros((H_MODEL, W_MODEL), dtype=np.float32) for k in classes}
+                # Downscale para resolução de inferência (4096×2560)
+                faixa_inference = cv2.resize(faixa_image, (IMAGE_WIDTH_PX, IMAGE_HEIGHT_INFERENCE), interpolation=cv2.INTER_LINEAR)
+                H_INF, W_INF = faixa_inference.shape[:2]
 
-                self._run_model_on_image(
-                    model=self.models[nome],
-                    model_name=nome,
-                    crop_image=model_image,
-                    offset_y=0,  # sem offset, imagem já é 5m
-                    janela=janela,
-                    stride=stride,
-                    global_masks=global_masks,
-                    score_maps=score_maps,
-                )
+                all_masks: dict[str, dict[int, np.ndarray]] = {}
+                all_scores: dict[str, dict[int, np.ndarray]] = {}
+                model_y_scales: dict[str, float] = {}
 
-                all_masks[nome] = global_masks
-                all_scores[nome] = score_maps
-                model_y_scales[nome] = y_scale
+                for sm in self.sub_modelos:
+                    nome = sm["nome"]
+                    if nome not in self.models:
+                        continue
+                    classes = sm["classes"]
+                    janela = sm.get("janela", [1024, 1024])
+                    stride = sm.get("stride", [512, 512])
+                    offsets_y = sm.get("offsets_y")
 
-            detections = []
-            image_stem = arquivo_faixa.rsplit(".", 1)[0]
-            for sm in self.sub_modelos:
-                nome = sm["nome"]
-                if nome not in all_masks:
-                    continue
-                classes = sm["classes"]
-                for cls_id_str, class_name in classes.items():
-                    cls_id = int(cls_id_str)
-                    mask = all_masks[nome].get(cls_id)
-                    if mask is not None and mask.any():
-                        score = all_scores[nome].get(cls_id)
-                        detections.extend(self._extract_polygons(
-                            mask,
-                            class_name,
-                            score,
-                            image_stem,
-                            y_scale=model_y_scales.get(nome, Y_SCALE),
-                        ))
+                    if nome == "panelas":
+                        model_image = faixa_image
+                        y_scale = 1.0
+                    else:
+                        model_image = faixa_inference
+                        y_scale = Y_SCALE
 
-            detections = self._postprocess_trinca_jacare(detections)
-            detections = self._filtrar_couro_pequeno(detections)
+                    H_MODEL, W_MODEL = model_image.shape[:2]
+                    global_masks = {int(k): np.zeros((H_MODEL, W_MODEL), dtype=np.uint8) for k in classes}
+                    score_maps = {int(k): np.zeros((H_MODEL, W_MODEL), dtype=np.float32) for k in classes}
 
-            # Salva resultado com metadados da faixa
-            all_results[arquivo_faixa] = {
-                "deteccoes": detections,
-                "faixa_meta": {
-                    "arquivo": arquivo_faixa,
-                    "bloco_indice": bloco["indice"],
-                    "km_inicio": faixa_meta.get("km_inicio"),
-                    "km_fim": faixa_meta.get("km_fim"),
-                    "altura_px": faixa_meta.get("altura_px"),
-                },
-            }
-            self._save_json(all_results)
+                    self._run_model_on_image(
+                        model=self.models[nome],
+                        model_name=nome,
+                        crop_image=model_image,
+                        offset_y=0,  # sem offset, imagem já é 5m
+                        janela=janela,
+                        stride=stride,
+                        global_masks=global_masks,
+                        score_maps=score_maps,
+                        offsets_y=offsets_y,
+                    )
+
+                    all_masks[nome] = global_masks
+                    all_scores[nome] = score_maps
+                    model_y_scales[nome] = y_scale
+
+                detections = []
+                image_stem = arquivo_faixa.rsplit(".", 1)[0]
+                for sm in self.sub_modelos:
+                    nome = sm["nome"]
+                    if nome not in all_masks:
+                        continue
+                    classes = sm["classes"]
+                    for cls_id_str, class_name in classes.items():
+                        cls_id = int(cls_id_str)
+                        mask = all_masks[nome].get(cls_id)
+                        if mask is not None and mask.any():
+                            score = all_scores[nome].get(cls_id)
+                            detections.extend(self._extract_polygons(
+                                mask,
+                                class_name,
+                                score,
+                                image_stem,
+                                y_scale=model_y_scales.get(nome, Y_SCALE),
+                            ))
+
+                detections = self._postprocess_trinca_jacare(detections)
+                detections = self._filtrar_couro_pequeno(detections)
+
+                # Salva resultado com metadados da faixa
+                all_results[arquivo_faixa] = {
+                    "deteccoes": detections,
+                    "faixa_meta": {
+                        "arquivo": arquivo_faixa,
+                        "bloco_indice": bloco["indice"],
+                        "km_inicio": faixa_meta.get("km_inicio"),
+                        "km_fim": faixa_meta.get("km_fim"),
+                        "altura_px": faixa_meta.get("altura_px"),
+                    },
+                }
+                self._save_json(all_results)
 
         return all_results
