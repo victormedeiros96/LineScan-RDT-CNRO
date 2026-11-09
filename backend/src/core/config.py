@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     redis_url: str = "redis://redis:6379/0"
     database_url: str = ""
     job_retention_days: int = 30
+    # Tempo ocioso (segundos) antes de descarregar modelos e liberar VRAM.
+    # 0 desabilita a descarga automática. Padrão: 5 min.
+    model_idle_ttl_seconds: int = 300
 
     host: str = "0.0.0.0"
     port: int = 8000

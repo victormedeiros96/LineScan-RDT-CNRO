@@ -14,6 +14,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from src.services import analise_store
 from src.services.inference_engine import YOLOv8ONNX
+from src.services.model_lifecycle import ModelLease, get_model_manager, load_model
 
 logger = logging.getLogger(__name__)
 
@@ -144,19 +145,35 @@ class InferencePipeline:
         self.area_minima = area_minima
         self.viagem_nome = viagem_nome
         self.models: dict[str, object] = {}
+        self._leases: list[ModelLease] = []
 
     def _load_models(self):
+        """Carrega (ou reaproveita) os modelos via ModelManager, segurando as alças."""
+        if self.models:
+            return
+        manager = get_model_manager()
         for sm in self.sub_modelos:
             nome = sm["nome"]
             arquivo = sm["arquivo"]
             model_path = self.modelos_dir / arquivo
             if not model_path.exists():
                 raise FileNotFoundError(f"Modelo não encontrado: {model_path}")
-            if model_path.suffix.lower() == ".pt":
-                from ultralytics import YOLO
-                self.models[nome] = YOLO(str(model_path))
-            else:
-                self.models[nome] = YOLOv8ONNX(str(model_path), use_cuda=True)
+            lease = manager.acquire(model_path, lambda p=model_path: load_model(p))
+            self._leases.append(lease)
+            self.models[nome] = lease.model
+
+    def close(self) -> None:
+        """Libera as alças; o ModelManager decide quando descarregar por ociosidade."""
+        for lease in self._leases:
+            lease.release()
+        self._leases.clear()
+        self.models.clear()
+
+    def __enter__(self) -> "InferencePipeline":
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
 
     def _load_faixas(self) -> list[dict]:
         """Carrega metadados de todas as faixas disponíveis."""
@@ -410,7 +427,19 @@ class InferencePipeline:
         faixa: int | None = None,
         progress_callback=None,
     ):
-        self._load_models()
+        try:
+            self._load_models()
+            return self._run(tipo_pista=tipo_pista, sentido=sentido, faixa=faixa, progress_callback=progress_callback)
+        finally:
+            self.close()
+
+    def _run(
+        self,
+        tipo_pista: str = "simples",
+        sentido: str = "crescente",
+        faixa: int | None = None,
+        progress_callback=None,
+    ):
 
         # Carrega faixas de 5m a partir dos metadados
         faixas = self._load_faixas()
