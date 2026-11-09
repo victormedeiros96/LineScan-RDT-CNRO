@@ -45,6 +45,26 @@ O serviço `postgres` usa a imagem `postgres:16-alpine`, persiste em um volume n
 As credenciais vêm do `.env` (veja `.env.example`); o `docker compose` monta a
 `DATABASE_URL` do backend e do worker automaticamente. Nenhum segredo é commitado.
 
+### Migrações e dados legados
+
+O schema é versionado com Alembic e aplicado explicitamente (o container não migra sozinho):
+
+```bash
+docker compose exec backend alembic upgrade head   # aplica o schema
+docker compose exec backend alembic current        # revisão aplicada
+```
+
+As viagens que ainda estão só em `dados/` são importadas pela ETL idempotente:
+
+```bash
+docker compose exec backend python -m src.migrar_dados_legados --dry-run
+docker compose exec backend python -m src.migrar_dados_legados --report /app/dados/migracao_relatorio.json
+```
+
+O runbook completo (subir banco, migrar, backup/restore, monitorar, diagnosticar),
+o plano de cutover e o de rollback estão em
+[DOCUMENTACAO.md — Operação — Guia de Execução](DOCUMENTACAO.md#operação--guia-de-execução).
+
 ### Backup e restore
 
 ```bash

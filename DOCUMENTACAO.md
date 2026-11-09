@@ -13,23 +13,38 @@ Sistema full-stack para análise de patologias em pavimentos asfálticos de rodo
 ```
 ┌─────────────┐     ┌──────────────┐     ┌─────────┐     ┌──────────┐
 │  Frontend    │────▶│   Backend    │────▶│  Redis  │◀────│  Worker  │
-│  React/Vite  │     │  FastAPI:8000│     │         │     │  rq      │
+│  React/Vite  │     │  FastAPI:8000│     │  fila   │     │  rq      │
 │  :5173       │     │              │     └─────────┘     └──────────┘
-└─────────────┘     └──────────────┘                              │
-                                                                  ▼
-                                                          ┌──────────────┐
-                                                          │   modelos/    │
-                                                          │   dados/      │
-                                                          └──────────────┘
+└─────────────┘     └──────┬───────┘                              │
+                           │                                      │
+                           ▼                                      ▼
+                    ┌─────────────────────────────────────────────────┐
+                    │              PostgreSQL (rdt01)                 │
+                    │  projeto/viagem/bloco/faixa/deteccao/job/...    │
+                    └─────────────────────────────────────────────────┘
+                           ▲                                      ▲
+                           │                                      │
+                    ┌──────┴───────┐                      ┌───────┴──────┐
+                    │   modelos/   │                      │  dados/      │
+                    │  (read-only) │                      │  (legado/    │
+                    │              │                      │  fallback)   │
+                    └──────────────┘                      └──────────────┘
 ```
 
 - **Backend** — API REST, orquestração de trabalhos e persistência.
 - **Worker** — executa os trabalhos em segundo plano (processamento de imagens e análise).
-- **Redis** — fila de trabalhos (RQ).
+- **Redis** — fila de trabalhos (RQ). Não é fonte de verdade: o histórico de jobs e os
+  resultados vivem no PostgreSQL (RDT1-13).
 - **Frontend** — interface web para configurar trechos, enviar dados e revisar análises.
-- **PostgreSQL** — banco dos dados estruturados (em migração; ver tarefa RDT1-6). Sobe no compose
-  com volume nomeado `postgres_data` e `healthcheck` via `pg_isready`.
+- **PostgreSQL** — fonte de verdade dos dados estruturados (schema da RDT1-8, aplicado por
+  migração Alembic). Sobe no compose com volume nomeado `postgres_data` e `healthcheck` via
+  `pg_isready`.
+- **`dados/`** — artefatos legados por viagem, mantidos durante a transição como fallback/exportação
+  e importados pela ETL (RDT1-14). Ver [Dados e Artefatos em Disco](#dados-e-artefatos-em-disco).
 - **Docker** — 5 serviços: `backend`, `worker`, `frontend`, `redis`, `postgres`.
+
+A operação (subir banco, migrar, backup/restore, cutover e rollback) está no
+[Guia de Execução](#operação--guia-de-execução).
 
 ---
 
@@ -41,6 +56,38 @@ Sistema full-stack para análise de patologias em pavimentos asfálticos de rodo
 4. **Análise** — modelos de visão computacional detectam patologias (trincamento, couro de jacaré, panelas e remendos) sobre as faixas.
 5. **Revisão** — o editor interativo permite visualizar, corrigir e complementar as detecções.
 6. **IGG e exportação** — cálculo do IGG por quilômetro e exportação dos resultados.
+
+---
+
+## Dados e Artefatos em Disco
+
+A migração para banco (RDT1-6) moveu a fonte de verdade dos dados estruturados para o
+PostgreSQL. Os arquivos em `dados/` continuam existindo durante a transição: são
+fallback de leitura, exportação/compatibilidade e insumo da ETL (RDT1-14). A tabela
+abaixo resume onde cada dado vive hoje.
+
+| Dado | Fonte de verdade | Artefato legado em `dados/` | Observação |
+|---|---|---|---|
+| Projeto e viagem (config) | `projeto`, `viagem` | `<viagem>/viagem_config.json` | Vocabulário legado `tipo_faixa`/`duplicada` normalizado na ETL |
+| Blocos e faixas | `bloco`, `faixa` | `<viagem>/lote_*_meta.json` | Faixas concatenadas gravadas pelo job de concatenação |
+| Detecções | `deteccao` | `<viagem>/analise_completa.json` | JSON ainda escrito uma vez ao fim do job, para exportação |
+| Parâmetros TRI/TRE | `parametro_km` | `<viagem>/parametros_adicionais.json` | Séries TRI/TRE + `extras` |
+| Jobs/histórico | `job` | — (legado vive no Redis) | Redis é só a fila; ETL não importa jobs antigos |
+| Resultados IGG/ICP | `resultado_analise` | — | `detalhe` em JSONB; ICP ainda sem cálculo |
+| Imagens e artefatos de modelo | Volume `dados/` / `modelos/` | `<viagem>/...`, `modelos/` | `modelos/` é montado read-only |
+
+- **Volume `dados/`** — criado em runtime e montado em `backend` e `worker`. Está no
+  `.gitignore`; nunca é versionado.
+- **Volume `modelos/`** — montado read-only em `:ro`; contém os modelos por tipo de análise.
+- **Volume nomeado `postgres_data`** — dados do PostgreSQL, gerenciado pelo Docker; não é
+  um diretório do host.
+- **Backups** — `backups/rdt01_<utc>.dump` (formato custom do `pg_dump`), também no
+  `.gitignore`. Não versionar backups nem dados.
+
+Os artefatos legados **não** são removidos pelo cutover: o banco passa a ser autoritativo e
+os arquivos ficam apenas como fallback/exportação, até que uma tarefa futura os descontinue.
+Nenhuma migração ou rollback apaga arquivos de `dados/` — o rollback do banco é feito por
+soft delete e/ou restore do backup (ver abaixo).
 
 ---
 
@@ -121,6 +168,215 @@ docker compose up -d --build
 ```
 
 Requisitos: Docker com suporte a GPU (NVIDIA) para inferência acelerada. O volume `dados/` é criado em runtime para persistir as viagens processadas.
+
+---
+
+## Operação — Guia de Execução
+
+Runbook do banco relacional: subir, migrar, importar o legado, monitorar, diagnosticar,
+fazer o cutover e reverter. Os comandos assumem a raiz do repositório e o `.env`
+configurado (veja [Variáveis de ambiente e segredos](#variáveis-de-ambiente-e-segredos)).
+
+### 1. Subir o banco
+
+```bash
+cp .env.example .env          # se ainda não existir; ajuste POSTGRES_PASSWORD
+docker compose up -d postgres
+docker compose ps postgres    # STATUS deve ficar "healthy"
+docker compose logs -f postgres
+```
+
+O `healthcheck` usa `pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"`; `backend` e
+`worker` só sobem depois de o banco estar saudável. Suba a stack completa com
+`docker compose up -d --build`.
+
+### 2. Rodar as migrações
+
+O schema é aplicado por Alembic (`backend/migrations/versions/0001_schema_inicial.py`,
+que executa o DDL de `backend/migrations/0001_schema_inicial.sql`). O container **não**
+migra sozinho na subida: rode o comando de forma explícita após subir o banco.
+
+```bash
+# Com a stack de pé (DATABASE_URL já vem do compose):
+docker compose exec backend alembic current        # revisão aplicada (vazio = nenhuma)
+docker compose exec backend alembic upgrade head   # aplica o schema
+docker compose exec backend alembic history        # histórico de revisões
+
+# Fora do compose, em backend/ com DATABASE_URL definida:
+alembic upgrade head
+alembic current
+```
+
+- `alembic downgrade base` **remove todas as tabelas de domínio** — use só em banco de
+  desenvolvimento/teste ou quando o restore de backup for a opção (ver rollback).
+- Se as tabelas já existirem por DDL manual sem `alembic_version`, o `upgrade head`
+  falha com "relation already exists". Confira se o schema bate com a revisão e só então
+  alinhe o versionamento com `alembic stamp head`; na dúvida, recrie o banco vazio.
+- Testes de migração (`backend/tests/test_migrations.py`) aplicam e revertem o schema em
+  banco efêmero, com `DATABASE_TEST_URL` ou `pgserver`.
+
+### 3. Importar os dados legados (ETL)
+
+Sem janela de manutenção, o `--dry-run` pode rodar a qualquer momento: ele só lê
+`dados/` e imprime contagens/checksums. A execução real grava no banco e gera o
+relatório (manifesto de rollback).
+
+```bash
+# 1) simulação (não grava)
+docker compose exec backend python -m src.migrar_dados_legados --dry-run
+
+# 2) execução real, gravando o relatório no volume dados/ (visível no host)
+docker compose exec backend python -m src.migrar_dados_legados \
+    --report /app/dados/migracao_relatorio.json
+```
+
+Rode o `--dry-run` de novo após a execução real: contagens e `checksum_consolidado`
+devem ser os mesmos (idempotência). O relatório e o rollback detalhado estão em
+[ETL dos dados legados (RDT1-14)](#etl-dos-dados-legados-rdt1-14).
+
+### 4. Backup e restore (antes do cutover)
+
+Sempre faça o backup **antes** do cutover e de qualquer execução real da ETL:
+
+```bash
+./scripts/db_backup.sh          # backups/rdt01_<utc>.dump (pg_dump -Fc)
+
+docker compose stop backend worker
+./scripts/db_restore.sh backups/rdt01_<utc>.dump
+docker compose start backend worker
+```
+
+Detalhes e restrições em [Backup e restore](#backup-e-restore). `backups/` é ignorado
+pelo git. O restore é o rollback autoritativo do cutover (seção 8).
+
+### 5. Monitorar
+
+```bash
+curl -s http://localhost:8000/health        # {"status":"ok",...,"database":true}
+docker compose ps                           # postgres "healthy", backend/worker "running"
+docker compose logs --tail=200 backend worker | grep -iE "banco|database|erro|error"
+```
+
+Consultas úteis (o `sh -c` deixa o container expandir `POSTGRES_USER`/`POSTGRES_DB`):
+
+```bash
+docker compose exec postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "
+  select status, count(*) from job group by status order by 1;
+  select count(*) filter (where deleted_at is null) as viagens_ativas from viagem;
+  select count(*) from deteccao where deleted_at is null;
+  select max(created_at) as ultimo_job from job;
+"'
+```
+
+- `GET /health` retorna `database: false` quando o `DATABASE_URL` está ausente ou a
+  conexão falha (checagem via `psycopg`).
+- Jobs finalizados antes de `JOB_RETENTION_DAYS` (padrão 30) recebem soft delete ao fim
+  de cada job; contagens ativas ignoram `deleted_at`.
+- Sem banco disponível, as operações de persistência são *best-effort* (logam aviso) e a
+  API/worker seguem com o fallback legado — o serviço não cai, mas nada novo é persistido.
+
+### 6. Diagnosticar
+
+| Sintoma | Causa provável | Ação |
+|---|---|---|
+| `docker compose` falha com "defina POSTGRES_PASSWORD" | `.env` ausente ou senha vazia | Criar/ajustar `.env` a partir de `.env.example` |
+| `postgres` não fica `healthy` | Porta/volume/credenciais | `docker compose logs postgres`; conferir `POSTGRES_*` e `postgres_data` |
+| `/health` com `database: false` | `DATABASE_URL` ausente/errada ou banco fora | Conferir env do backend, `docker compose ps`, conectividade |
+| `alembic upgrade` erro "relation already exists" | Tabelas criadas fora do Alembic | Conferir schema; alinhar com `alembic stamp head` ou recriar vazio |
+| `alembic upgrade` erro de conexão | `DATABASE_URL` ausente | Rodar dentro do compose ou exportar a variável |
+| ETL real sem efeito, log "Banco indisponível" | Banco fora/URL errada | Subir banco e repetir; o dry-run funciona sem banco |
+| Contagens da ETL maior que o esperado | Já havia dados sem soft delete | Conferir `checksum_consolidado` e duplicatas pelas chaves naturais |
+| Job preso em `queued`/`started` | Worker parado/travado | `docker compose ps worker`; logs; reiniciar worker |
+| Escrita esperando (advisory lock) | Outra transação na mesma viagem | Aguardar; investigar jobs concorrentes da mesma viagem |
+
+### 7. Plano de cutover
+
+Objetivo: passar a fonte de verdade para o PostgreSQL sem perder nem duplicar dados.
+Faça em **janela de manutenção** (sem uploads/análises em andamento), com o responsável
+técnico acompanhando.
+
+**Ordem**
+
+1. Congelar escritas: aguardar os jobs em execução terminarem e parar `worker` e `backend`.
+2. Backupear o banco atual: `./scripts/db_backup.sh` (guarde o arquivo e o horário).
+3. Subir/atualizar o banco e aplicar o schema: `alembic upgrade head`;
+   conferir `alembic current` = `0001_schema_inicial` e as 9 tabelas + `alembic_version`.
+4. Rodar a ETL em `--dry-run` e guardar as contagens/checksum.
+5. Rodar a ETL real com `--report`, guardando o relatório (manifesto de rollback).
+6. Validar (checklist abaixo). Se falhar, **rollback** (seção 8).
+7. Religar `backend` e `worker`, fazer um smoke test de leitura/escrita.
+8. Monitorar `health`, logs e contagens por pelo menos um ciclo de job.
+
+**Validação / critérios de sucesso**
+
+- `alembic current` no `head` e `GET /health` com `database: true`.
+- ETL real conclui sem erro; `--dry-run` após a execução real devolve **as mesmas
+  contagens e o mesmo `checksum_consolidado`** (idempotência, sem duplicação).
+- Contagens batem com o dry-run e com o backup (viagens/blocos/faixas/detecções/parâmetros).
+- Sem violação das chaves únicas naturais (a própria migração falharia em caso de duplicata).
+- `GET /api/pastas/analise/{viagem}` e `GET /api/pastas/faixas/{viagem}` leem do banco
+  (viagem presente no banco, sem cair no JSON legado) e amostras conferem com `dados/`.
+- Histórico (`GET /api/pastas/jobs`) e resultados (`GET /api/relatorios/resultados/{viagem}`)
+  respondem a partir do banco; logs sem avisos recorrentes de "Banco indisponível".
+
+### 8. Plano de rollback
+
+Acione se a validação do cutover falhar, houver perda/corrupção de dados ou erros que
+impeçam a operação. O rollback **não apaga arquivos de `dados/`** e **não remove linhas
+fisicamente** (soft delete), exceto o restore do backup (destrutivo por natureza).
+
+1. Parar `backend` e `worker` para cessar escritas.
+2. **Desfazer a ETL** das viagens importadas:
+   ```bash
+   docker compose exec backend python -m src.migrar_dados_legados \
+       --rollback /app/dados/migracao_relatorio.json
+   ```
+   Isso faz soft delete apenas nas viagens com `criada = true`; rodar de novo é
+   inofensivo. Viagens que já existiam (`criada = false`) podem ter sido atualizadas
+   pela ETL e **não** são revertidas por esse comando.
+3. **Restaurar o backup anterior** para o estado exato de antes do cutover (cobre as
+   viagens pré-existentes e qualquer outra alteração):
+   ```bash
+   ./scripts/db_restore.sh backups/rdt01_<utc>.dump
+   ```
+4. Se o problema for só o schema/migração e **não** houver dados a preservar,
+   `alembic downgrade base` remove as tabelas; havendo dados, prefira o restore do backup.
+5. Religar `backend` e `worker`; conferir `/health`, logs e o fallback legado em `dados/`.
+6. Registrar no card: horário, arquivo de backup usado, relatório da ETL, motivo e
+   evidências da validação.
+
+**Critérios de rollback**: health/`database` falso após o cutover; contagens ou
+checksum divergentes sem explicação; leitura de dados errada/ausente; duplicação;
+schema inaplicável. O restore do backup é o rollback autoritativo.
+
+### Variáveis de ambiente e segredos
+
+Modelo em `.env.example` (valores de exemplo); o `.env` real é ignorado pelo git.
+
+| Variável | Onde | Obrigatória | Segredo | Descrição |
+|---|---|---|---|---|
+| `POSTGRES_DB` | compose | não (padrão `rdt01`) | não | Nome do banco |
+| `POSTGRES_USER` | compose | não (padrão `rdt01`) | não | Usuário do banco |
+| `POSTGRES_PASSWORD` | compose | **sim** | **sim** | Senha; sem ela o compose falha de propósito |
+| `POSTGRES_PORT` | compose | não (padrão `5432`) | não | Porta publicada no host |
+| `DATABASE_URL` | backend/worker | no compose é montada; fora dele, sim | **sim** (contém senha) | `postgresql://user:senha@host:5432/db` |
+| `REDIS_URL` | backend/worker | não (padrão `redis://redis:6379/0`) | depende | URL da fila RQ |
+| `MODELOS_DIR` | backend/worker | não (`/app/modelos`) | não | Diretório dos modelos |
+| `DADOS_DIR` | backend/worker | não (`/app/dados`) | não | Volume dos artefatos legados |
+| `SOURCES_CONFIG` | backend | não (`/app/config/sources.json`) | não | Configuração de fontes |
+| `DEBUG` | backend | não (`false`) | não | Modo de depuração |
+| `JOB_RETENTION_DAYS` | backend/worker | não (padrão 30) | não | Retenção de jobs antes do soft delete |
+| `CORS_ORIGINS` | backend | não (`["*"]`) | não | Origens permitidas |
+| `NVIDIA_VISIBLE_DEVICES` | backend/worker | não | não | GPU exposta aos containers |
+| `NVIDIA_DRIVER_CAPABILITIES` | backend/worker | não | não | Capacidades do driver NVIDIA |
+| `DATABASE_TEST_URL` | testes | não | **sim** | Banco efêmero da suíte; nunca apontar para produção |
+
+Regras de segredo: nunca commitar `.env`/`DATABASE_URL`/backups; usar apenas valores de
+exemplo em `.env.example` e na documentação; não imprimir `DATABASE_URL` em logs ou no
+relatório da ETL (o relatório traz checksums e contagens, não credenciais). Para trocar a
+senha, altere-a no banco (`ALTER ROLE ... PASSWORD ...`), atualize o `.env` e reinicie
+`backend`/`worker` — só `POSTGRES_*` no compose não altera a senha de um volume já
+inicializado.
 
 ---
 
@@ -299,7 +555,8 @@ docker compose start backend worker
 
 Os scripts rodam `pg_dump`/`pg_restore` via `docker compose exec`, sem exigir cliente PostgreSQL no
 host. Restaure com backend/worker parados para não haver conexões abertas durante o `--clean`.
-`backups/` está no `.gitignore`.
+`backups/` está no `.gitignore`. Uso dentro do cutover/rollback em
+[Operação — Guia de Execução](#operação--guia-de-execução).
 
 ### Pendências
 
@@ -309,3 +566,7 @@ host. Restaure com backend/worker parados para não haver conexões abertas dura
   resultados ICP, sem cálculo. A ETL dos jobs/resultados legados (que vivem no
   Redis, não em `dados/`) continua pendente; a ETL por arquivo (RDT1-14) cobre
   viagem/config/blocos/faixas/análise/parâmetros.
+* O cutover e o rollback descritos acima precisam ser ensaiados/revisados em ambiente com
+  Docker e PostgreSQL antes de serem considerados aprovados; este workspace não tem Docker,
+  `psql` nem as dependências Python, então só os comandos e o dry-run da ETL são verificáveis
+  aqui (os testes de banco rodam em `DATABASE_TEST_URL`/`pgserver`).
