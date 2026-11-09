@@ -34,8 +34,8 @@ services:
 
   migrate:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backend/Dockerfile.coolify
     command: alembic upgrade head
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-rdt01}:${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no Coolify}@postgres:5432/${POSTGRES_DB:-rdt01}
@@ -46,12 +46,10 @@ services:
 
   backend:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backend/Dockerfile.coolify
     volumes:
-      - ./modelos:/app/modelos:ro
       - dados:/app/dados
-      - ./sources.json:/app/config/sources.json:ro
     environment:
       - MODELOS_DIR=/app/modelos
       - DADOS_DIR=/app/dados
@@ -81,13 +79,11 @@ services:
 
   worker:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backend/Dockerfile.coolify
     command: rq worker --url redis://redis:6379/0 rdt01-processing
     volumes:
-      - ./modelos:/app/modelos:ro
       - dados:/app/dados
-      - ./sources.json:/app/config/sources.json:ro
     environment:
       - MODELOS_DIR=/app/modelos
       - DADOS_DIR=/app/dados
