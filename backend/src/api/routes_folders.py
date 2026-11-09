@@ -7,6 +7,7 @@ from rq import Queue
 
 from src.core.config import Settings
 from src.core.dependencies import get_settings_dep
+from src.services.image_processor import calcular_km_faixa
 from src.utils.tipo_pista import normalizar_tipo_pista
 
 router = APIRouter(prefix="/api/pastas", tags=["pastas"])
@@ -529,13 +530,12 @@ async def obter_analise(viagem_nome: str, settings: Settings = Depends(get_setti
         elif viagem_config.get("km_inicial") is not None:
             bloco_idx = _bloco_num(nome)
             faixa_idx = _faixa_num(nome)
-            km_por_faixa = 0.005
-            km_por_bloco = 0.020
-            km = viagem_config["km_inicial"]
-            if viagem_config.get("sentido") == "decrescente":
-                km -= bloco_idx * km_por_bloco + faixa_idx * km_por_faixa
-            else:
-                km += bloco_idx * km_por_bloco + faixa_idx * km_por_faixa
+            km, _ = calcular_km_faixa(
+                viagem_config["km_inicial"],
+                viagem_config.get("sentido", "crescente"),
+                bloco_idx,
+                faixa_idx,
+            )
 
         imagens.append({
             "arquivo": nome,
