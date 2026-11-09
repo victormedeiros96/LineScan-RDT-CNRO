@@ -23,3 +23,5 @@ logs/
 
 # Configuração local
 config/sources.json
+# Backups locais do banco
+backups/

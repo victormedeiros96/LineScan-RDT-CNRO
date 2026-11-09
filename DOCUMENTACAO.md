@@ -27,7 +27,9 @@ Sistema full-stack para análise de patologias em pavimentos asfálticos de rodo
 - **Worker** — executa os trabalhos em segundo plano (processamento de imagens e análise).
 - **Redis** — fila de trabalhos (RQ).
 - **Frontend** — interface web para configurar trechos, enviar dados e revisar análises.
-- **Docker** — 4 serviços: `backend`, `worker`, `frontend`, `redis`.
+- **PostgreSQL** — banco dos dados estruturados (em migração; ver tarefa RDT1-6). Sobe no compose
+  com volume nomeado `postgres_data` e `healthcheck` via `pg_isready`.
+- **Docker** — 5 serviços: `backend`, `worker`, `frontend`, `redis`, `postgres`.
 
 ---
 
@@ -119,3 +121,45 @@ docker compose up -d --build
 ```
 
 Requisitos: Docker com suporte a GPU (NVIDIA) para inferência acelerada. O volume `dados/` é criado em runtime para persistir as viagens processadas.
+
+---
+
+## Banco de dados
+
+### Serviço
+
+* `postgres:16-alpine`, container `rdt01-postgres`, `restart: unless-stopped`.
+* Volume nomeado `postgres_data` em `/var/lib/postgresql/data`.
+* Porta publicada `${POSTGRES_PORT:-5432}`.
+* `healthcheck`: `pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"` (5 s de intervalo, 10 tentativas).
+* `backend` e `worker` dependem de `postgres` com `condition: service_healthy`.
+
+### Configuração
+
+Credenciais e banco vêm do `.env` na raiz (modelo em `.env.example`): `POSTGRES_DB`,
+`POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_PORT`. O compose monta a `DATABASE_URL`
+(`postgresql://<user>:<senha>@postgres:5432/<db>`) para backend e worker; o backend também a lê
+via `Settings.database_url` (pydantic-settings). O `POSTGRES_PASSWORD` é obrigatório — sem ele o
+compose falha com mensagem clara, evitando senha padrão commitada.
+
+O endpoint `GET /health` devolve `database: true|false` como teste de conectividade (checagem
+feita com `psycopg`). A camada de acesso completa (SQLAlchemy, repositórios e migrações Alembic)
+é escopo da tarefa RDT1-10, sobre o schema modelado na RDT1-8.
+
+### Backup e restore
+
+```bash
+./scripts/db_backup.sh                       # grava backups/rdt01_<utc>.dump (pg_dump -Fc)
+docker compose stop backend worker
+./scripts/db_restore.sh backups/<arquivo>.dump
+docker compose start backend worker
+```
+
+Os scripts rodam `pg_dump`/`pg_restore` via `docker compose exec`, sem exigir cliente PostgreSQL no
+host. Restaure com backend/worker parados para não haver conexões abertas durante o `--clean`.
+`backups/` está no `.gitignore`.
+
+### Pendências
+
+* Aplicação automática do schema (migração Alembic) pertence à RDT1-10; hoje o banco sobe vazio.
+* Método do ICP flexível e retenção de jobs/resultados seguem em aberto na nota de schema (RDT1-8).
