@@ -46,9 +46,9 @@ def test_normalizar_rejeita_valor_invalido() -> None:
 # ── Amostragem (image_processor) ──
 
 
-def test_amostragem_simples_pula_blocos_impares() -> None:
-    assert deve_pular_bloco("simples", None) is True
-    assert deve_pular_bloco("simples", 1) is True
+def test_amostragem_simples_processa_todos_os_blocos() -> None:
+    assert deve_pular_bloco("simples", None) is False
+    assert deve_pular_bloco("simples", 1) is False
 
 
 def test_amostragem_dupla_faixa_1_pula_blocos_impares() -> None:

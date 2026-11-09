@@ -31,6 +31,15 @@ EXTENSOES_VALIDAS = {".png", ".jpg", ".jpeg", ".bmp"}
 
 LADO_PADRAO = "left"
 
+# ── Modos de amostragem do IGG (DNIT 006/2003-PRO, item 6.1 + regra operacional) ──
+# Modo de 50: uma estação efetiva de 20 m (pista simples e pista dupla faixa 2).
+# Modo de 25: uma estação efetiva de 40 m — amostra os 5 m iniciais de um bloco,
+# pula o bloco seguinte e assume o mesmo resultado (pista dupla faixa 1).
+ESTACOES_POR_KM_MODO_50 = 50
+ESTACOES_POR_KM_MODO_25 = 25
+PASSO_ESTACAO_METROS_MODO_50 = 20
+PASSO_ESTACAO_METROS_MODO_25 = 40
+
 
 @dataclass
 class FaixaResult:
@@ -222,14 +231,42 @@ def _processar_lote(
     )
 
 
+def modo_amostragem(tipo_pista: str, faixa: int | None) -> str:
+    """Modo de amostragem efetivo do IGG: ``"25"`` ou ``"50"``.
+
+    Só a pista dupla faixa 1 (leve/rápida) usa o modo de 25 (estação efetiva de
+    40 m). A pista simples e a pista dupla faixa 2 (pesada/lenta) usam o modo de
+    50 (estação de 20 m). Exige o vocabulário canônico de ``tipo_pista``.
+    """
+    try:
+        faixa_int = int(faixa) if faixa is not None else None
+    except (TypeError, ValueError):
+        faixa_int = None
+    if tipo_pista == "dupla" and faixa_int == 1:
+        return "25"
+    return "50"
+
+
+def parametros_amostragem(tipo_pista: str, faixa: int | None) -> tuple[int, int]:
+    """Retorna ``(n_estacoes, passo_metros)`` do modo de amostragem do IGG.
+
+    Compartilhado por ``image_processor`` (o que amostrar) e ``igg_calculator``
+    (como agrupar em estações e qual ``n`` usar), garantindo a mesma regra.
+    """
+    if modo_amostragem(tipo_pista, faixa) == "25":
+        return ESTACOES_POR_KM_MODO_25, PASSO_ESTACAO_METROS_MODO_25
+    return ESTACOES_POR_KM_MODO_50, PASSO_ESTACAO_METROS_MODO_50
+
+
 def deve_pular_bloco(tipo_pista: str, faixa: int | None) -> bool:
     """Indica se os blocos ímpares devem ser pulados na amostragem.
 
-    Pista simples e pista dupla faixa 1 (esquerda/rápida) usam apenas os
-    índices pares; pista dupla faixa 2 (direita/lenta) processa todos.
+    Só a pista dupla faixa 1 (esquerda/rápida) usa apenas os índices pares, o
+    que equivale ao modo de 25. A pista simples e a pista dupla faixa 2
+    (direita/lenta) processam todos os blocos (modo de 50).
     Exige o vocabulário canônico de ``tipo_pista`` (``simples``/``dupla``).
     """
-    return tipo_pista == "simples" or (tipo_pista == "dupla" and faixa == 1)
+    return modo_amostragem(tipo_pista, faixa) == "25"
 
 
 def processar_pasta(
