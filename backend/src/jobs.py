@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import logging
 import shutil
 from pathlib import Path
 
 from rq import get_current_job
+from sqlalchemy.exc import SQLAlchemyError
 
 from src.core.config import get_settings
+from src.services import viagem_store
 from src.services.image_processor import processar_pasta, LARGURA_PX
 from src.services.inference_pipeline import InferencePipeline
 from src.services.model_loader import listar_modelos
 from src.utils.tipo_pista import normalizar_tipo_pista
+
+logger = logging.getLogger(__name__)
 
 
 def _set_progress(current: int, total: int, message: str) -> None:
@@ -64,6 +69,23 @@ def processar_imagens_job(
         faixa=faixa,
         max_batches=max_batches,
     )
+
+    # Grava config/blocos/faixas no banco em uma única transação. Durante a
+    # transição, uma falha aqui não invalida a concatenação: os JSONs legados
+    # (viagem_config.json e lote_*_meta.json) continuam sendo a fonte de fallback.
+    try:
+        viagem_store.persistir_viagem(
+            viagem_nome=viagem_nome,
+            pasta=destino.name,
+            config=config,
+            lotes=viagem_store.coletar_metas(destino),
+        )
+    except (RuntimeError, SQLAlchemyError) as exc:
+        logger.warning(
+            "Falha ao persistir a viagem %s no banco; mantendo o JSON legado: %s",
+            viagem_nome,
+            exc,
+        )
 
     return {
         "total_lotes": len(lotes),

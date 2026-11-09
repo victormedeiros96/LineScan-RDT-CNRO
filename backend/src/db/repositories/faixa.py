@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterable
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 
-from src.db.models import Faixa
+from src.db.models import Bloco, Faixa
 from src.db.repositories.base import BaseRepository
 
 
@@ -79,3 +80,37 @@ class FaixaRepository(BaseRepository):
             .order_by(Faixa.bloco_id, Faixa.faixa_index)
         )
         return list(self.session.scalars(stmt))
+
+    def list_by_bloco(self, bloco_id: uuid.UUID) -> list[Faixa]:
+        stmt = (
+            select(Faixa)
+            .where(Faixa.bloco_id == bloco_id, Faixa.deleted_at.is_(None))
+            .order_by(Faixa.faixa_index)
+        )
+        return list(self.session.scalars(stmt))
+
+    def list_by_viagem_com_bloco(
+        self, viagem_id: uuid.UUID
+    ) -> list[tuple[Faixa, Bloco]]:
+        """Faixas da viagem já com o bloco, ordenadas por bloco e índice da faixa."""
+        stmt = (
+            select(Faixa, Bloco)
+            .join(Bloco, Faixa.bloco_id == Bloco.id)
+            .where(
+                Faixa.viagem_id == viagem_id,
+                Faixa.deleted_at.is_(None),
+                Bloco.deleted_at.is_(None),
+            )
+            .order_by(Bloco.indice, Faixa.faixa_index)
+        )
+        return [(row[0], row[1]) for row in self.session.execute(stmt).all()]
+
+    def soft_delete_except(self, viagem_id: uuid.UUID, keep_ids: Iterable[uuid.UUID]) -> None:
+        """Marca como removidas as faixas ativas da viagem fora de ``keep_ids``."""
+        stmt = update(Faixa).where(
+            Faixa.viagem_id == viagem_id, Faixa.deleted_at.is_(None)
+        )
+        ids = list(keep_ids)
+        if ids:
+            stmt = stmt.where(Faixa.id.notin_(ids))
+        self.session.execute(stmt.values(deleted_at=func.now()))

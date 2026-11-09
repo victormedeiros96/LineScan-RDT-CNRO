@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterable
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 
 from src.db.models import Bloco
 from src.db.repositories.base import BaseRepository
@@ -52,3 +53,17 @@ class BlocoRepository(BaseRepository):
             .order_by(Bloco.indice)
         )
         return list(self.session.scalars(stmt))
+
+    def soft_delete_except(self, viagem_id: uuid.UUID, keep_ids: Iterable[uuid.UUID]) -> None:
+        """Marca como removidos os blocos ativos da viagem fora de ``keep_ids``.
+
+        Usado na reconciliação da concatenação: reprocessar uma viagem não deve
+        manter blocos antigos visíveis na API.
+        """
+        stmt = update(Bloco).where(
+            Bloco.viagem_id == viagem_id, Bloco.deleted_at.is_(None)
+        )
+        ids = list(keep_ids)
+        if ids:
+            stmt = stmt.where(Bloco.id.notin_(ids))
+        self.session.execute(stmt.values(deleted_at=func.now()))
