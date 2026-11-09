@@ -21,6 +21,21 @@ class ViagemRepository(BaseRepository):
         )
         return self.session.scalars(stmt).first()
 
+    def get_by_pasta(self, pasta: str) -> Viagem | None:
+        """Localiza a viagem pela pasta em `dados/` (identidade usada pela API).
+
+        Como a API recebe só o nome da pasta, a busca não depende do projeto;
+        havendo mais de uma, retorna a atualizada mais recentemente.
+        """
+        if not pasta:
+            return None
+        stmt = (
+            select(Viagem)
+            .where(Viagem.pasta == pasta, Viagem.deleted_at.is_(None))
+            .order_by(Viagem.updated_at.desc())
+        )
+        return self.session.scalars(stmt).first()
+
     def create(
         self,
         *,

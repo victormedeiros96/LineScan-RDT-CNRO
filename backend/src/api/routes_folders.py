@@ -7,6 +7,7 @@ from rq import Queue
 
 from src.core.config import Settings
 from src.core.dependencies import get_settings_dep
+from src.services import viagem_store
 from src.services.image_processor import calcular_km_faixa
 from src.utils.tipo_pista import normalizar_tipo_pista
 
@@ -285,7 +286,15 @@ async def deletar_job(job_id: str, settings: Settings = Depends(get_settings_dep
 
 @router.get("/faixas/{viagem_nome}")
 async def listar_faixas(viagem_nome: str, settings: Settings = Depends(get_settings_dep)):
-    """Lista todas as faixas de 5m de uma viagem com seus metadados."""
+    """Lista todas as faixas de 5m de uma viagem com seus metadados.
+
+    O banco é a fonte preferencial (RDT1-11); se a viagem ainda não estiver no
+    banco, cai nos ``lote_*_meta.json`` legados.
+    """
+    do_banco = viagem_store.listar_faixas_viagem(viagem_nome)
+    if do_banco is not None:
+        return do_banco
+
     base = _resolver_viagem(settings, viagem_nome)
     if base is None:
         raise HTTPException(404, f"Viagem não encontrada: {viagem_nome}")
@@ -401,8 +410,12 @@ async def servir_preview_faixa(viagem_nome: str, arquivo: str, request: Request,
 
 @router.get("/meta/{viagem_nome}/{bloco_indice}")
 async def obter_meta_bloco(viagem_nome: str, bloco_indice: int, settings: Settings = Depends(get_settings_dep)):
-    """Retorna os metadados de um bloco específico."""
+    """Retorna os metadados de um bloco específico (banco; fallback JSON)."""
     import json as _json
+
+    do_banco = viagem_store.obter_meta_bloco(viagem_nome, bloco_indice)
+    if do_banco is not None:
+        return do_banco
 
     base = _resolver_viagem(settings, viagem_nome)
     if base is None:
@@ -475,7 +488,10 @@ async def obter_analise(viagem_nome: str, settings: Settings = Depends(get_setti
 
     config_path = base / "viagem_config.json"
     viagem_config: dict = {}
-    if config_path.is_file():
+    do_banco = viagem_store.ler_config_viagem(base.name)
+    if do_banco is not None:
+        viagem_config = do_banco
+    elif config_path.is_file():
         viagem_config = _json.loads(config_path.read_text(encoding="utf-8"))
 
     # Normaliza campo tipo_faixa -> tipo_pista e o vocabulário legado
