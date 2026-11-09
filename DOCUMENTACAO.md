@@ -186,8 +186,8 @@ configuração da viagem, os blocos e as faixas no banco:
   `RDT01`.
 
 O histórico de jobs e os resultados IGG/ICP ficam em `job` e `resultado_analise`
-(RDT1-13), descritos abaixo. Ainda pendente: a ETL dos `dados/` existentes
-(RDT1-14).
+(RDT1-13), descritos abaixo. A ETL das viagens legadas em `dados/` está em
+[ETL dos dados legados (RDT1-14)](#etl-dos-dados-legados-rdt1-14).
 
 ### Persistência de análise/detecções/parâmetros (RDT1-12)
 
@@ -241,6 +241,53 @@ resultados:
   *best-effort* (apenas logam aviso); a API e o worker continuam funcionando com o
   fallback legado.
 
+### ETL dos dados legados (RDT1-14)
+
+`backend/src/services/migracao_legado.py` (CLI em `backend/src/migrar_dados_legados.py`)
+migra as viagens que ainda vivem só no volume `dados/` para o banco. Lê, por pasta de
+viagem, `viagem_config.json`, `lote_*_meta.json`, `analise_completa.json` e
+`parametros_adicionais.json`, e grava em uma transação por viagem, nesta ordem:
+
+1. projeto padrão `RDT01`, viagem/config, blocos e faixas
+   (`viagem_store.persistir_viagem_em_sessao`);
+2. detecções e parâmetros TRI/TRE por KM (`analise_store.persistir_analise_em_sessao`).
+
+A mesma transação mantém o advisory lock da viagem, então **dois jobs/processos de
+migração concorrentes não duplicam** linhas. O `viagem_config.json` no vocabulário
+legado (`tipo_faixa`, `duplicada`) é normalizado para `tipo_pista`/`dupla`.
+
+Uso (dentro do container, com `DATABASE_URL` definido):
+
+```bash
+# Simulação: lê os arquivos, imprime contagens/checksums e NÃO grava no banco.
+python -m src.migrar_dados_legados --dry-run
+
+# Execução real: grava e gera o relatório/manifesto de rollback.
+python -m src.migrar_dados_legados --report migracao_relatorio.json
+
+# Rollback a partir do relatório.
+python -m src.migrar_dados_legados --rollback migracao_relatorio.json
+```
+
+O relatório JSON traz, por viagem, contagens (`blocos`, `faixas`, `analise_faixas`,
+`deteccoes`, `parametros`), o SHA-256 de cada arquivo de origem (`arquivos`), um
+`origem_checksum`, um `dados_checksum` do dataset normalizado, o `viagem_id` e se a
+viagem foi `criada` pela ETL. O `checksum_consolidado` fecha o conjunto. Rodar a ETL
+duas vezes produz o mesmo `checksum_consolidado` e as mesmas contagens (idempotência
+por chaves naturais: `projeto`/`nome`, `bloco.indice`, `faixa.arquivo`, `(viagem, km)`).
+
+**Rollback.** O script `--rollback` faz soft delete (detecções, parâmetros,
+resultados, faixas, blocos e a viagem) apenas das viagens com `criada = true`, isto é,
+que não existiam antes da migração; rodar o rollback de novo é inofensivo. Para
+viagens que já existiam (`criada = false`) a ETL pode ter atualizado linhas
+pré-existentes, então o rollback autoritativo é restaurar o **backup anterior**
+(`scripts/db_backup.sh` antes da ETL e `scripts/db_restore.sh` para voltar). Nenhuma
+viagem é removida fisicamente: todo o rollback usa `deleted_at` (soft delete).
+
+Testes em `backend/tests/test_migracao_legado.py` (fixtures em disco, dry-run,
+idempotência, concorrência e rollback), rodando com `DATABASE_TEST_URL`/`pgserver`
+como os demais testes de banco.
+
 ### Backup e restore
 
 ```bash
@@ -259,4 +306,6 @@ host. Restaure com backend/worker parados para não haver conexões abertas dura
 * O schema é aplicado por `alembic upgrade head` (manual/de deploy); o container ainda não roda a
   migração automaticamente na subida.
 * Método do ICP (flexível e rígido) segue em aberto; só há armazenamento de
-  resultados ICP, sem cálculo. A ETL dos jobs/resultados legados entra na RDT1-14.
+  resultados ICP, sem cálculo. A ETL dos jobs/resultados legados (que vivem no
+  Redis, não em `dados/`) continua pendente; a ETL por arquivo (RDT1-14) cobre
+  viagem/config/blocos/faixas/análise/parâmetros.
