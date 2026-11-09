@@ -143,8 +143,30 @@ via `Settings.database_url` (pydantic-settings). O `POSTGRES_PASSWORD` é obriga
 compose falha com mensagem clara, evitando senha padrão commitada.
 
 O endpoint `GET /health` devolve `database: true|false` como teste de conectividade (checagem
-feita com `psycopg`). A camada de acesso completa (SQLAlchemy, repositórios e migrações Alembic)
-é escopo da tarefa RDT1-10, sobre o schema modelado na RDT1-8.
+feita com `psycopg`).
+
+### Camada de acesso e migrações
+
+* `backend/src/db/` — SQLAlchemy 2.0: `base.py` (Base declarativa), `session.py` (engine, sessão,
+  `session_scope` e dependência `get_session`), `models.py` (as 9 tabelas do schema da RDT1-8) e
+  `repositories/` (projeto, viagem, bloco, faixa, detecção, parâmetro KM, job, resultado IGG/ICP,
+  upload).
+* Os repositórios **não** fazem `commit`: a transação é de `session_scope`/`get_session`. Assim,
+  escritas por faixa/job ficam atômicas (sem JSON parcial).
+* Migração inicial: `backend/migrations/versions/0001_schema_inicial.py`, que aplica o DDL
+  autoritativo `backend/migrations/0001_schema_inicial.sql`.
+* Comandos (em `backend/`, com `DATABASE_URL` definida):
+
+  ```bash
+  alembic upgrade head      # aplica o schema
+  alembic downgrade base    # remove o schema (rollback)
+  alembic current           # revisão aplicada
+  ```
+
+* Testes de banco (`tests/test_db_repositories.py`, `tests/test_migrations.py`) usam banco efêmero:
+  com `DATABASE_TEST_URL` (ex.: o postgres do compose) ou `pgserver` local; sem nenhum, são pulados.
+
+Ainda pendente: ligar a API/worker ao banco (slices RDT1-11/12/13) e a ETL dos `dados/` (RDT1-14).
 
 ### Backup e restore
 
@@ -161,5 +183,6 @@ host. Restaure com backend/worker parados para não haver conexões abertas dura
 
 ### Pendências
 
-* Aplicação automática do schema (migração Alembic) pertence à RDT1-10; hoje o banco sobe vazio.
+* O schema é aplicado por `alembic upgrade head` (manual/de deploy); o container ainda não roda a
+  migração automaticamente na subida.
 * Método do ICP flexível e retenção de jobs/resultados seguem em aberto na nota de schema (RDT1-8).
