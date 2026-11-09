@@ -4,6 +4,8 @@ import re
 from collections import Counter, defaultdict
 from pathlib import Path
 
+from src.services.image_processor import calcular_km_faixa
+
 MAP_DNIT: dict[str, tuple[str, str, float, int]] = {
     "Trincas":                    ("T1",  "Trincas Isoladas Tipo 1",       0.2, 1),
     "Trinca em Bloco":            ("FC2", "FC-2 (Trinca Bloco/Jacaré)",    0.5, 2),
@@ -184,8 +186,6 @@ def montar_estacoes_por_km(
     faixas = sorted(analise.keys(), key=lambda n: (_bloco_num(n), _faixa_num(n)))
 
     km_inicial = config.get("km_inicial")
-    km_por_bloco = 0.020
-    km_por_faixa = 0.005
     sentido = config.get("sentido", "crescente")
 
     kms: dict[str, dict] = {}
@@ -196,10 +196,10 @@ def montar_estacoes_por_km(
         deteccoes = dados.get("deteccoes", []) if isinstance(dados, dict) else dados
 
         if km_inicial is not None:
-            if sentido == "decrescente":
-                km_atual = float(km_inicial) - (bloco * km_por_bloco + faixa * km_por_faixa)
-            else:
-                km_atual = float(km_inicial) + (bloco * km_por_bloco + faixa * km_por_faixa)
+            # Mesma convenção de image_processor: a faixa é sempre crescente em KM,
+            # partindo do menor KM do bloco.
+            km_atual, _ = calcular_km_faixa(km_inicial, sentido, bloco, faixa)
+            assert km_atual is not None
             km_key = str(int(km_atual))
 
             if km_key not in kms:

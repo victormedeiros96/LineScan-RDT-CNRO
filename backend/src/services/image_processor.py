@@ -76,7 +76,7 @@ def listar_imagens_origem(pasta: Path) -> list[Path]:
     return arquivos
 
 
-def _calcular_km_faixa(
+def calcular_km_faixa(
     km_inicial: float | None,
     sentido: str,
     bloco_indice: int,
@@ -87,24 +87,21 @@ def _calcular_km_faixa(
 
     metros_por_bloco = METROS_POR_CONCAT
     km_por_bloco = metros_por_bloco / 1000
-
-    km_inicio_bloco = (
-        km_inicial - bloco_indice * km_por_bloco
-        if sentido == "decrescente"
-        else km_inicial + bloco_indice * km_por_bloco
-    )
-
     km_por_faixa = FAIXA_METROS / 1000
-    km_inicio_faixa = (
-        km_inicio_bloco - faixa_index * km_por_faixa
-        if sentido == "decrescente"
-        else km_inicio_bloco + faixa_index * km_por_faixa
-    )
-    km_fim_faixa = (
-        km_inicio_faixa - km_por_faixa
-        if sentido == "decrescente"
-        else km_inicio_faixa + km_por_faixa
-    )
+
+    # A visualização (e o stacking de faixas) é sempre crescente em KM: a faixa 0
+    # é o topo (menor KM) e a faixa 3 a base (maior KM). Partimos então do menor
+    # KM do bloco e somamos o deslocamento da faixa.
+    #   crescente:   bloco começa em km_inicial + bloco*0,020;
+    #   decrescente: como o bloco é invertido na concatenação, o menor KM do
+    #                bloco é km_inicial - (bloco+1)*0,020.
+    if sentido == "decrescente":
+        km_base_bloco = km_inicial - (bloco_indice + 1) * km_por_bloco
+    else:
+        km_base_bloco = km_inicial + bloco_indice * km_por_bloco
+
+    km_inicio_faixa = km_base_bloco + faixa_index * km_por_faixa
+    km_fim_faixa = km_inicio_faixa + km_por_faixa
 
     return km_inicio_faixa, km_fim_faixa
 
@@ -139,8 +136,13 @@ def _processar_lote(
     total_height = sum(img.shape[0] for _, img in resized)
     concat_bgr = np.zeros((total_height, LARGURA_PX, 3), dtype=np.uint8)
 
+    # A visualização é sempre crescente em KM. No sentido crescente os primeiros
+    # frames já são os de menor KM (topo), então mantém a ordem. No decrescente os
+    # primeiros frames são os de maior KM, então inverte-se para pôr o menor KM no topo.
+    frames = list(reversed(resized)) if sentido == "decrescente" else resized
+
     y = 0
-    for nome, img in reversed(resized):
+    for nome, img in frames:
         h = img.shape[0]
         concat_bgr[y:y+h, :, :] = img
         y += h
@@ -165,15 +167,15 @@ def _processar_lote(
     caminho_faixa = pasta_destino / nome_faixa
     pil_faixa.save(str(caminho_faixa))
 
-    nomes_reversas = [nome for nome, _ in reversed(resized)]
+    nomes_empilhados = [nome for nome, _ in frames]
     px_por_img = ALTURA_PX
     img_raw_inicio = y_inicio // px_por_img
     img_raw_fim = (y_fim - 1) // px_por_img
     offset_y = y_inicio % px_por_img
 
     imagens_raw_faixa = [
-        nomes_reversas[ri]
-        for ri in range(img_raw_inicio, min(img_raw_fim + 1, len(nomes_reversas)))
+        nomes_empilhados[ri]
+        for ri in range(img_raw_inicio, min(img_raw_fim + 1, len(nomes_empilhados)))
     ]
 
     percentual_ultima = 1.0
@@ -183,7 +185,7 @@ def _processar_lote(
         if 0 < pixels_ultima < FAIXA_ALTURA_PX:
             percentual_ultima = pixels_ultima / ALTURA_PX
 
-    km_inicio, km_fim = _calcular_km_faixa(km_inicial, sentido, idx, faixa_idx)
+    km_inicio, km_fim = calcular_km_faixa(km_inicial, sentido, idx, faixa_idx)
 
     faixa_result = FaixaResult(
         bloco_indice=idx,
