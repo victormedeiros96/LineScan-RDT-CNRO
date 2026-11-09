@@ -166,7 +166,27 @@ feita com `psycopg`).
 * Testes de banco (`tests/test_db_repositories.py`, `tests/test_migrations.py`) usam banco efêmero:
   com `DATABASE_TEST_URL` (ex.: o postgres do compose) ou `pgserver` local; sem nenhum, são pulados.
 
-Ainda pendente: ligar a API/worker ao banco (slices RDT1-11/12/13) e a ETL dos `dados/` (RDT1-14).
+### Persistência de viagem/config/blocos/faixas (RDT1-11)
+
+O primeiro slice vertical da migração (`backend/src/services/viagem_store.py`) coloca a
+configuração da viagem, os blocos e as faixas no banco:
+
+* `processar_imagens_job` grava `viagem_config` + todos os `lote_*_meta.json` **em uma única
+  transação** depois da concatenação. A transação é idempotente (`projeto`/`nome` da viagem,
+  `bloco.indice` e `faixa.arquivo`) e reconcilia o que saiu do conjunto com soft delete.
+* Escritas concorrentes da mesma viagem são serializadas por advisory lock transacional; a
+  criação do projeto também é serializada.
+* A API lê configuração, faixas (`GET /api/pastas/faixas/{viagem}`) e metadados de bloco
+  (`GET /api/pastas/meta/{viagem}/{bloco}`) do banco primeiro e cai no JSON legado quando a
+  viagem ainda não está no banco.
+* Durante a transição, `viagem_config.json` e `lote_*_meta.json` continuam sendo escritos e
+  servem de fallback; se o banco estiver indisponível no worker, a concatenação não falha —
+  apenas registra aviso e mantém o JSON.
+* Enquanto não há gestão de projetos no produto, todas as viagens entram no projeto padrão
+  `RDT01`.
+
+Ainda pendente: persistir análise/detecções/parâmetros TRI-TRE (RDT1-12), histórico de
+jobs e resultados IGG/ICP (RDT1-13) e a ETL dos `dados/` existentes (RDT1-14).
 
 ### Backup e restore
 
