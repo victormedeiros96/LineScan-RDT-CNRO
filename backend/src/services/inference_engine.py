@@ -55,6 +55,10 @@ class YOLOv8ONNX:
         ]
         self.num_outputs = len(self.session.get_outputs())
 
+    def close(self) -> None:
+        """Libera a sessão do ONNX Runtime (usado na descarga por ociosidade)."""
+        self.session = None
+
     def predict(self, image: np.ndarray, conf_threshold: float = 0.25, iou_threshold: float = 0.45):
         orig_shape = image.shape[:2]
         letterbox = LetterBox(new_shape=(self.input_shape[2], self.input_shape[3]))
