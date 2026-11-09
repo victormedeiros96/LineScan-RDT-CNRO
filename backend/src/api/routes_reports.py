@@ -16,6 +16,7 @@ from src.services.igg_calculator import (
     montar_estacoes_por_km,
 )
 from src.services.planilha_import import importar_planilha
+from src.utils.tipo_pista import normalizar_tipo_pista
 
 router = APIRouter(prefix="/api/relatorios", tags=["relatorios"])
 
@@ -86,15 +87,20 @@ async def importar_planilha_endpoint(
 
     # Lê config da viagem para saber tipo de pista e faixa
     config_path = base / "viagem_config.json"
-    tipo_pista = "simples"
-    faixa = None
+    config: dict = {}
     if config_path.is_file():
         try:
             config = json.loads(config_path.read_text(encoding="utf-8"))
-            tipo_pista = config.get("tipo_pista", "simples")
-            faixa = config.get("faixa")
         except Exception:
-            pass
+            config = {}
+
+    try:
+        tipo_pista = normalizar_tipo_pista(
+            config.get("tipo_pista", config.get("tipo_faixa"))
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    faixa = config.get("faixa")
 
     params_path = base / "parametros_adicionais.json"
 

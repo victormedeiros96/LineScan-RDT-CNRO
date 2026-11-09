@@ -21,7 +21,7 @@ export function ViagemConfigForm() {
     e.preventDefault()
     const nome = form.nome.trim()
     if (!nome) return
-    if (form.tipo_faixa === 'duplicada' && form.faixa === null) return
+    if (form.tipo_faixa === 'dupla' && form.faixa === null) return
     setViagem({ ...form, nome })
   }
 
@@ -116,20 +116,20 @@ export function ViagemConfigForm() {
                   />
                   Pista Simples
                 </label>
-                <label className={`radio ${form.tipo_faixa === 'duplicada' ? 'ativo' : ''}`}>
+                <label className={`radio ${form.tipo_faixa === 'dupla' ? 'ativo' : ''}`}>
                   <input
                     type="radio"
                     name="tipo_faixa"
-                    value="duplicada"
-                    checked={form.tipo_faixa === 'duplicada'}
-                    onChange={() => setForm({ ...form, tipo_faixa: 'duplicada', faixa: null })}
+                    value="dupla"
+                    checked={form.tipo_faixa === 'dupla'}
+                    onChange={() => setForm({ ...form, tipo_faixa: 'dupla', faixa: null })}
                   />
                   Pista Duplicada
                 </label>
               </div>
             </div>
 
-            {form.tipo_faixa === 'duplicada' && (
+            {form.tipo_faixa === 'dupla' && (
               <div className="form-group">
                 <label>Faixa</label>
                 <div className="radio-group">
@@ -171,7 +171,7 @@ export function ViagemConfigForm() {
           <button
             type="submit"
             className="btn btn-primary"
-            disabled={!form.nome.trim() || (form.tipo_faixa === 'duplicada' && form.faixa === null)}
+            disabled={!form.nome.trim() || (form.tipo_faixa === 'dupla' && form.faixa === null)}
           >
             Iniciar Análise →
           </button>

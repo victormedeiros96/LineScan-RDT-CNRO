@@ -9,6 +9,7 @@ from src.core.config import get_settings
 from src.services.image_processor import processar_pasta, LARGURA_PX
 from src.services.inference_pipeline import InferencePipeline
 from src.services.model_loader import listar_modelos
+from src.utils.tipo_pista import normalizar_tipo_pista
 
 
 def _set_progress(current: int, total: int, message: str) -> None:
@@ -36,6 +37,7 @@ def processar_imagens_job(
     origem = Path(pasta_origem)
     viagem_nome = viagem_nome.strip()
     destino = settings.dados_dir / viagem_nome
+    tipo_pista = normalizar_tipo_pista(tipo_pista)
 
     config = {
         "nome": viagem_nome,
@@ -80,6 +82,7 @@ def processar_inferencia_job(
     settings = get_settings()
     viagem_nome = viagem_nome.strip()
     destino = settings.dados_dir / viagem_nome
+    tipo_pista = normalizar_tipo_pista(tipo_pista)
     modelos = listar_modelos(settings.modelos_dir)
     modelo_info = next((m for m in modelos if m.tipo == tipo_modelo), None)
     if modelo_info is None:
