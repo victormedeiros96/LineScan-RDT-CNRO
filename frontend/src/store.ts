@@ -6,7 +6,7 @@ export interface ViagemConfig {
   km_inicial: number
   km_final: number | null
   sentido: 'crescente' | 'decrescente'
-  tipo_faixa: 'simples' | 'duplicada'
+  tipo_faixa: 'simples' | 'dupla'
   faixa: 1 | 2 | null
 }
 

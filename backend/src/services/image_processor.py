@@ -10,6 +10,8 @@ import cv2
 import numpy as np
 from PIL import Image
 
+from src.utils.tipo_pista import normalizar_tipo_pista
+
 # ── Constantes hardcoded do linescan ──
 LARGURA_PX = 4096       # 4 metros
 ALTURA_PX = 1024        # 2 metros (altura de cada imagem raw)
@@ -218,6 +220,16 @@ def _processar_lote(
     )
 
 
+def deve_pular_bloco(tipo_pista: str, faixa: int | None) -> bool:
+    """Indica se os blocos ímpares devem ser pulados na amostragem.
+
+    Pista simples e pista dupla faixa 1 (esquerda/rápida) usam apenas os
+    índices pares; pista dupla faixa 2 (direita/lenta) processa todos.
+    Exige o vocabulário canônico de ``tipo_pista`` (``simples``/``dupla``).
+    """
+    return tipo_pista == "simples" or (tipo_pista == "dupla" and faixa == 1)
+
+
 def processar_pasta(
     pasta_origem: Path,
     pasta_destino: Path,
@@ -237,6 +249,7 @@ def processar_pasta(
     2. Aplica padrão de amostragem: pula blocos conforme tipo_pista/sentido/faixa.
     3. Para cada bloco, salva APENAS 1 faixa de 5m (faixa_alvo).
     """
+    tipo_pista = normalizar_tipo_pista(tipo_pista)
     sub_left = pasta_origem / "left"
     source = sub_left if sub_left.is_dir() else pasta_origem
 
@@ -252,7 +265,7 @@ def processar_pasta(
     if max_batches is not None:
         lotes批次 = lotes批次[:max_batches]
 
-    pular_bloco = (tipo_pista == "simples") or (tipo_pista == "dupla" and faixa == 1)
+    pular_bloco = deve_pular_bloco(tipo_pista, faixa)
     faixa_alvo = 0 if sentido == "crescente" else 3
 
     blocos_a_processar: list[tuple[int, list[Path]]] = []

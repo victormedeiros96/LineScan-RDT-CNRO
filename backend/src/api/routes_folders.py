@@ -7,6 +7,7 @@ from rq import Queue
 
 from src.core.config import Settings
 from src.core.dependencies import get_settings_dep
+from src.utils.tipo_pista import normalizar_tipo_pista
 
 router = APIRouter(prefix="/api/pastas", tags=["pastas"])
 
@@ -120,6 +121,11 @@ async def processar_imagens(
     tipo_pista = body.get("tipo_pista", "simples")
     sentido = body.get("sentido", "crescente")
     faixa = body.get("faixa")
+
+    try:
+        tipo_pista = normalizar_tipo_pista(tipo_pista)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
     if not viagem_nome:
         raise HTTPException(400, "Campo 'viagem_nome' é obrigatório")
@@ -421,6 +427,10 @@ async def iniciar_inferencia(
     tipo_pista = body.get("tipo_pista", "simples")
     sentido = body.get("sentido", "crescente")
     faixa = body.get("faixa")
+    try:
+        tipo_pista = normalizar_tipo_pista(tipo_pista)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     viagem_nome = _normalizar_viagem(viagem_nome)
     destino = _resolver_viagem(settings, viagem_nome)
     if destino is None:
@@ -467,9 +477,14 @@ async def obter_analise(viagem_nome: str, settings: Settings = Depends(get_setti
     if config_path.is_file():
         viagem_config = _json.loads(config_path.read_text(encoding="utf-8"))
 
-    # Normaliza campo tipo_faixa -> tipo_pista (compatibilidade com versões antigas)
+    # Normaliza campo tipo_faixa -> tipo_pista e o vocabulário legado
+    # `duplicada` -> `dupla` (compatibilidade com versões antigas).
     if "tipo_faixa" in viagem_config and "tipo_pista" not in viagem_config:
         viagem_config["tipo_pista"] = viagem_config.pop("tipo_faixa")
+    try:
+        viagem_config["tipo_pista"] = normalizar_tipo_pista(viagem_config["tipo_pista"])
+    except (KeyError, ValueError):
+        pass
 
     analise: dict = _json.loads(json_path.read_text(encoding="utf-8"))
     parametros_path = base / "parametros_adicionais.json"

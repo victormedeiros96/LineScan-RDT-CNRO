@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from src.utils.tipo_pista import normalizar_tipo_pista
+
 
 def encontrar_tabela(arquivo: Path, aba: str | int = 0) -> pd.DataFrame:
     """Localiza a tabela de dados na planilha procurando por 'Latitude' e 'Longitude'."""
@@ -39,7 +41,10 @@ def extrair_tri_tre(
     Regra:
       - Pista simples ou dupla faixa 2: ATR Esq → TRI, ATR Dir → TRE
       - Pista dupla faixa 1:           ATR Esq → TRE, ATR Dir → TRI
+
+    Aceita o vocabulário legado ``duplicada`` (normalizado para ``dupla``).
     """
+    tipo_pista = normalizar_tipo_pista(tipo_pista)
     km_values: list[float] = []
     atr_esq_vals: list[float] = []
     atr_dir_vals: list[float] = []
