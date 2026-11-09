@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     sources_config: Path = Path("/app/config/sources.json")
 
     redis_url: str = "redis://redis:6379/0"
+    database_url: str = ""
 
     host: str = "0.0.0.0"
     port: int = 8000

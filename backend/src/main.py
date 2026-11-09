@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from src.api import folders_router, models_router, projects_router, reports_router, debug_router, uploads_router
 from src.core.config import get_settings
+from src.core.database import check_database
 
 settings = get_settings()
 
@@ -29,5 +30,5 @@ app.include_router(uploads_router)
 
 
 @app.get("/health")
-async def health_check():
-    return {"status": "ok", "version": "0.1.0"}
+def health_check():
+    return {"status": "ok", "version": "0.1.0", "database": check_database()}
