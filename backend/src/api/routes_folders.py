@@ -8,7 +8,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from src.core.config import Settings
 from src.core.dependencies import get_settings_dep
-from src.services import analise_store, viagem_store
+from src.services import analise_store, job_store, viagem_store
 from src.services.image_processor import calcular_km_faixa
 from src.utils.tipo_pista import normalizar_tipo_pista
 
@@ -141,6 +141,15 @@ async def processar_imagens(
         raise HTTPException(404, f"Pasta não encontrada: {pasta_origem}")
 
     queue = _get_queue(settings)
+    meta = {
+        "viagem": viagem_nome,
+        "pasta": str(origem),
+        "km_inicial": km_inicial,
+        "km_final": km_final,
+        "tipo_pista": tipo_pista,
+        "sentido": sentido,
+        "faixa": faixa,
+    }
     job = queue.enqueue(
         "src.jobs.processar_imagens_job",
         pasta_origem=str(origem),
@@ -153,26 +162,41 @@ async def processar_imagens(
         job_timeout=3600,
         result_ttl=-1,
         failure_ttl=-1,
-        meta={
-            "viagem": viagem_nome,
-            "pasta": str(origem),
-            "km_inicial": km_inicial,
-            "km_final": km_final,
-            "tipo_pista": tipo_pista,
-            "sentido": sentido,
-            "faixa": faixa,
-        },
+        meta=meta,
     )
 
     r = _get_redis(settings)
     r.lpush(JOBS_LIST_KEY, job.id)
     r.ltrim(JOBS_LIST_KEY, 0, JOBS_LIST_MAX - 1)
 
+    job_store.registrar_job(
+        rq_job_id=job.id,
+        viagem_nome=viagem_nome,
+        tipo="concatenacao",
+        meta=meta,
+    )
+
     return {"status": "queued", "job_id": job.id}
 
 
 @router.get("/status/{job_id}")
 async def job_status(job_id: str, settings: Settings = Depends(get_settings_dep)):
+    # Banco é a fonte do histórico (RDT1-13); Redis é o fallback da transição.
+    entrada = job_store.obter_job(job_id)
+    if entrada is not None:
+        result: dict = {"status": entrada["status"]}
+        if entrada["status"] == "finished":
+            resultado = entrada.get("resultado")
+            result["resultado"] = resultado
+            if resultado:
+                if "lotes" in resultado:
+                    result["total_lotes"] = len(resultado["lotes"])
+                elif "total_imagens" in resultado:
+                    result["total_imagens"] = resultado["total_imagens"]
+        elif entrada["status"] == "failed":
+            result["error"] = entrada.get("error", "")
+        return result
+
     queue = _get_queue(settings)
     try:
         job = queue.fetch_job(job_id)
@@ -199,6 +223,12 @@ async def job_status(job_id: str, settings: Settings = Depends(get_settings_dep)
 
 @router.get("/jobs")
 async def listar_jobs(settings: Settings = Depends(get_settings_dep)):
+    # Banco é a fonte do histórico (RDT1-13). Se ainda não houver registros
+    # (ex.: jobs antigos só no Redis), cai no legado.
+    do_banco = job_store.listar_jobs()
+    if do_banco:
+        return do_banco
+
     r = _get_redis(settings)
     queue = _get_queue(settings)
     raw_ids = r.lrange(JOBS_LIST_KEY, 0, JOBS_LIST_MAX - 1)
@@ -239,10 +269,14 @@ async def deletar_job(job_id: str, settings: Settings = Depends(get_settings_dep
     queue = _get_queue(settings)
 
     job = queue.fetch_job(job_id)
+    entrada_db = None
     if job is None:
-        raise HTTPException(404, "Job não encontrado")
+        # Após um flush do Redis o job continua no banco (RDT1-13).
+        entrada_db = job_store.obter_job(job_id)
+        if entrada_db is None:
+            raise HTTPException(404, "Job não encontrado")
 
-    meta = job.meta or {}
+    meta = (job.meta if job is not None else entrada_db.get("meta")) or {}
     viagem = meta.get("viagem")
     tipo = meta.get("tipo")
     tipo_modelo = meta.get("tipo_modelo")
@@ -275,8 +309,10 @@ async def deletar_job(job_id: str, settings: Settings = Depends(get_settings_dep
                 _shutil.rmtree(base, ignore_errors=True)
                 dados_removidos.append(str(base))
 
-    job.delete(remove_from_queue=True)
+    if job is not None:
+        job.delete(remove_from_queue=True)
     r.lrem(JOBS_LIST_KEY, 0, job_id)
+    job_store.remover_job(job_id)
 
     return {
         "status": "removido",
@@ -452,6 +488,13 @@ async def iniciar_inferencia(
         raise HTTPException(404, f"Viagem não encontrada: {viagem_nome}")
     viagem_nome = destino.name
     queue = _get_queue(settings)
+    meta = {
+        "viagem": viagem_nome,
+        "tipo_modelo": tipo_modelo,
+        "tipo_pista": tipo_pista,
+        "sentido": sentido,
+        "faixa": faixa,
+    }
     job = queue.enqueue(
         "src.jobs.processar_inferencia_job",
         viagem_nome=viagem_nome,
@@ -462,17 +505,17 @@ async def iniciar_inferencia(
         job_timeout=7200,
         result_ttl=-1,
         failure_ttl=-1,
-        meta={
-            "viagem": viagem_nome,
-            "tipo_modelo": tipo_modelo,
-            "tipo_pista": tipo_pista,
-            "sentido": sentido,
-            "faixa": faixa,
-        },
+        meta=meta,
     )
     r = _get_redis(settings)
     r.lpush(JOBS_LIST_KEY, job.id)
     r.ltrim(JOBS_LIST_KEY, 0, JOBS_LIST_MAX - 1)
+    job_store.registrar_job(
+        rq_job_id=job.id,
+        viagem_nome=viagem_nome,
+        tipo="inferencia",
+        meta=meta,
+    )
     return {"status": "queued", "job_id": job.id}
 
 @router.get("/analise/{viagem_nome}")

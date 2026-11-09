@@ -185,8 +185,9 @@ configuração da viagem, os blocos e as faixas no banco:
 * Enquanto não há gestão de projetos no produto, todas as viagens entram no projeto padrão
   `RDT01`.
 
-Ainda pendente: histórico de jobs e resultados IGG/ICP (RDT1-13) e a ETL dos `dados/`
-existentes (RDT1-14).
+O histórico de jobs e os resultados IGG/ICP ficam em `job` e `resultado_analise`
+(RDT1-13), descritos abaixo. Ainda pendente: a ETL dos `dados/` existentes
+(RDT1-14).
 
 ### Persistência de análise/detecções/parâmetros (RDT1-12)
 
@@ -210,6 +211,36 @@ O segundo slice vertical (`backend/src/services/analise_store.py`) coloca a aná
   novo (dict com `deteccoes`/`faixa_meta`). Faixas ausentes no banco são ignoradas — a
   concatenação (RDT1-11) precisa ter rodado antes.
 
+### Histórico de jobs e resultados IGG/ICP (RDT1-13)
+
+O terceiro slice vertical (`backend/src/services/job_store.py` e
+`backend/src/services/resultado_store.py`) tira do Redis o histórico e os
+resultados:
+
+* Ao enfileirar, a API grava um registro em `job` ligado ao `rq_job_id`
+  (`tipo` `concatenacao`, `inferencia` ou `upload_zip`, `meta` e status
+  `queued`). O worker atualiza o ciclo de vida (`started` -> `finished`/`failed`),
+  o progresso por lote e o resultado/erro. O Redis/RQ continua sendo só a fila.
+* `GET /api/pastas/status/{job_id}` e `GET /api/pastas/jobs` leem do banco e caem
+  no Redis quando o banco não está disponível ou ainda não há registros (jobs
+  antigos). `DELETE /api/pastas/jobs/{job_id}` também remove pelo banco, então o
+  histórico sobrevive a um flush do Redis.
+* Retenção: jobs finalizados criados antes de `JOB_RETENTION_DAYS` (padrão 30
+  dias) recebem soft delete (`job.deleted_at`) ao fim de cada job
+  (`job_store.limpar_jobs_antigos`).
+* Os relatórios persistem os resultados por `(viagem, km, tipo_analise)` em
+  `resultado_analise` (`POST /api/relatorios/igg/{viagem}`). Recalcular o mesmo KM
+  atualiza o registro; recalcular o conjunto completo reconcilia com soft delete
+  os KMs que saíram. `GET /api/relatorios/resultados/{viagem}?tipo=igg|icp` lê os
+  resultados persistidos.
+* O `detalhe` (`JSONB`) guarda o restante do resultado (grupos, parcelas). O
+  cálculo do ICP ainda não existe no backend; o armazenamento já aceita
+  `tipo_analise = 'icp'`, mas nenhum resultado ICP é gerado enquanto a fórmula não
+  for definida.
+* Sem banco configurado/indisponível, todas as operações de job/resultado são
+  *best-effort* (apenas logam aviso); a API e o worker continuam funcionando com o
+  fallback legado.
+
 ### Backup e restore
 
 ```bash
@@ -227,4 +258,5 @@ host. Restaure com backend/worker parados para não haver conexões abertas dura
 
 * O schema é aplicado por `alembic upgrade head` (manual/de deploy); o container ainda não roda a
   migração automaticamente na subida.
-* Método do ICP flexível e retenção de jobs/resultados seguem em aberto na nota de schema (RDT1-8).
+* Método do ICP (flexível e rígido) segue em aberto; só há armazenamento de
+  resultados ICP, sem cálculo. A ETL dos jobs/resultados legados entra na RDT1-14.

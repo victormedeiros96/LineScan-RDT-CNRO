@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 
 from src.db.models import Job
 from src.db.repositories.base import BaseRepository
@@ -93,6 +93,30 @@ class JobRepository(BaseRepository):
             job.finalizado_em = datetime.now(timezone.utc)
             self._flush()
         return job
+
+    def soft_delete(self, job: Job) -> None:
+        job.deleted_at = datetime.now(timezone.utc)
+        self._flush()
+
+    def soft_delete_by_rq_id(self, rq_job_id: str) -> bool:
+        job = self.get_by_rq_id(rq_job_id)
+        if job is None:
+            return False
+        self.soft_delete(job)
+        return True
+
+    def soft_delete_older_than(self, limite: datetime) -> int:
+        stmt = (
+            update(Job)
+            .where(
+                Job.created_at < limite,
+                Job.deleted_at.is_(None),
+                Job.status.in_(_ESTADOS_TERMINAIS),
+            )
+            .values(deleted_at=func.now())
+        )
+        resultado = self.session.execute(stmt)
+        return resultado.rowcount or 0
 
     def list_recent(
         self,

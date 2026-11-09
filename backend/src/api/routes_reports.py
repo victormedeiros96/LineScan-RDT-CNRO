@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Respons
 from src.core.config import Settings
 from src.core.dependencies import get_settings_dep
 from src.api.routes_folders import _resolver_viagem
+from src.services import resultado_store
 from src.services.igg_calculator import (
     calcular_igg_por_km,
     montar_estacoes_por_km,
@@ -72,6 +73,34 @@ async def calcular_igg(
         resultado = calcular_igg_por_km(int(km_key), data["estacoes"], params_km)
         resultados.append(resultado)
 
+    # Persiste os resultados por trecho/KM (RDT1-13); best-effort: sem banco o
+    # relatório continua sendo devolvido normalmente.
+    resultado_store.persistir_resultados(
+        viagem_nome=base.name,
+        tipo_analise="igg",
+        resultados=resultados,
+        norma=resultado_store.NORMA_IGG,
+        reconciliar=km_filter is None,
+    )
+
+    return resultados
+
+
+@router.get("/resultados/{viagem_nome}")
+async def listar_resultados(
+    viagem_nome: str,
+    tipo: str = "igg",
+    settings: Settings = Depends(get_settings_dep),
+):
+    """Resultados de IGG/ICP persistidos por KM (RDT1-13)."""
+    if tipo not in ("igg", "icp"):
+        raise HTTPException(400, "Parâmetro 'tipo' deve ser 'igg' ou 'icp'")
+    base = _resolver_viagem(settings, viagem_nome)
+    if base is None:
+        raise HTTPException(404, f"Viagem não encontrada: {viagem_nome}")
+    resultados = resultado_store.carregar_resultados(base.name, tipo)
+    if resultados is None:
+        raise HTTPException(503, "Banco de dados indisponível")
     return resultados
 
 
