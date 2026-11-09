@@ -4,7 +4,9 @@ from pydantic import BaseModel, Field
 
 
 class EstacaoData(BaseModel):
-    numero: int = Field(..., ge=1, le=25)
+    # n_estacoes é 25 (modo de 40 m) ou 50 (modo de 20 m) — ver
+    # `image_processor.parametros_amostragem`. O limite reflete o máximo.
+    numero: int = Field(..., ge=1, le=50)
     km: float
     fc1: int = 0
     fc1_cons: int = 0
@@ -23,7 +25,8 @@ class EstacaoData(BaseModel):
 class IGGResult(BaseModel):
     km_inicial: float
     km_final: float
-    total_estacoes: int = 25
+    # Varia com o modo de amostragem (25 ou 50); 50 é apenas o valor padrão do modo de 20 m.
+    total_estacoes: int = 50
     igg: float = 0.0
     conceito: str = ""
     estacoes: list[EstacaoData] = Field(default_factory=list)

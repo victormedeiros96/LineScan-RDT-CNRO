@@ -4,7 +4,8 @@ import re
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from src.services.image_processor import calcular_km_faixa
+from src.services.image_processor import calcular_km_faixa, parametros_amostragem
+from src.utils.tipo_pista import normalizar_tipo_pista
 
 MAP_DNIT: dict[str, tuple[str, str, float, int]] = {
     "Trincas":                    ("T1",  "Trincas Isoladas Tipo 1",       0.2, 1),
@@ -188,6 +189,15 @@ def montar_estacoes_por_km(
     km_inicial = config.get("km_inicial")
     sentido = config.get("sentido", "crescente")
 
+    # Modo de amostragem (DNIT 006/2003-PRO, item 6.1 + regra operacional):
+    # pista simples e dupla faixa 2 → 50 estações de 20 m; dupla faixa 1 → 25
+    # estações de 40 m. Mantém a mesma regra de `image_processor`.
+    try:
+        tipo_pista = normalizar_tipo_pista(config.get("tipo_pista", config.get("tipo_faixa")))
+    except ValueError:
+        tipo_pista = "simples"
+    n_estacoes, passo_metros = parametros_amostragem(tipo_pista, config.get("faixa"))
+
     kms: dict[str, dict] = {}
     for nome in faixas:
         bloco = _bloco_num(nome)
@@ -203,10 +213,10 @@ def montar_estacoes_por_km(
             km_key = str(int(km_atual))
 
             if km_key not in kms:
-                kms[km_key] = {"imagens": [], "estacoes": [[] for _ in range(50)]}
+                kms[km_key] = {"imagens": [], "estacoes": [[] for _ in range(n_estacoes)]}
 
             metros_no_km = abs(km_atual - int(km_atual)) * 1000
-            estacao_idx = min(49, int(metros_no_km / 20))
+            estacao_idx = min(n_estacoes - 1, int(metros_no_km / passo_metros))
 
             kms[km_key]["imagens"].append(nome)
             kms[km_key]["estacoes"][estacao_idx].extend(deteccoes)
