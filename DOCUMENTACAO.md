@@ -185,8 +185,30 @@ configuração da viagem, os blocos e as faixas no banco:
 * Enquanto não há gestão de projetos no produto, todas as viagens entram no projeto padrão
   `RDT01`.
 
-Ainda pendente: persistir análise/detecções/parâmetros TRI-TRE (RDT1-12), histórico de
-jobs e resultados IGG/ICP (RDT1-13) e a ETL dos `dados/` existentes (RDT1-14).
+Ainda pendente: histórico de jobs e resultados IGG/ICP (RDT1-13) e a ETL dos `dados/`
+existentes (RDT1-14).
+
+### Persistência de análise/detecções/parâmetros (RDT1-12)
+
+O segundo slice vertical (`backend/src/services/analise_store.py`) coloca a análise no banco:
+
+* A inferência grava as detecções de **cada faixa em uma transação curta** (substituição
+  completa da faixa), sem escrita parcial de JSON. Se o banco/faixa não estiver
+  disponível, o job apenas registra aviso e segue; o `analise_completa.json` continua
+  sendo escrito **uma única vez ao fim do job** para exportação/compatibilidade.
+* Detecções usam `deteccao` (classe, confiança, área, `global_box`/`global_polygon` em
+  `JSONB`, linha/coluna). Os campos do JSON que não têm coluna (`area`, `score`) são
+  derivados na leitura, e `direction: "manual"` mapeia `origem = 'manual'`.
+* Parâmetros TRI/TRE ficam em `parametro_km` por `(viagem, km)`: `TRI (mm)`/`TRE (mm)`
+  vão para as séries e o restante do objeto do editor para `extras`. Reprocessar
+  reconcilia com soft delete os KMs que saíram do conjunto.
+* `GET /api/pastas/analise/{viagem}` lê detecções e parâmetros do banco e cai no JSON
+  legado quando a viagem ainda não está no banco; `POST .../salvar` grava no banco em
+  uma transação e mantém a escrita do JSON durante a transição.
+* Análises antigas podem ser importadas para o banco com
+  `analise_store.migrar_analise_legada(...)`, que aceita o formato antigo (lista) e o
+  novo (dict com `deteccoes`/`faixa_meta`). Faixas ausentes no banco são ignoradas — a
+  concatenação (RDT1-11) precisa ter rodado antes.
 
 ### Backup e restore
 

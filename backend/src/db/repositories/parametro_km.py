@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from src.db.models import ParametroKm
 from src.db.repositories.base import BaseRepository
@@ -62,3 +62,14 @@ class ParametroKmRepository(BaseRepository):
             ParametroKm.viagem_id == viagem_id, ParametroKm.deleted_at.is_(None)
         )
         return int(self.session.scalar(stmt) or 0)
+
+    def soft_delete_except(
+        self, viagem_id: uuid.UUID, keep_ids: set[uuid.UUID]
+    ) -> None:
+        """Marca como removidos os parâmetros da viagem fora de ``keep_ids``."""
+        stmt = update(ParametroKm).where(
+            ParametroKm.viagem_id == viagem_id, ParametroKm.deleted_at.is_(None)
+        )
+        if keep_ids:
+            stmt = stmt.where(ParametroKm.id.notin_(keep_ids))
+        self.session.execute(stmt.values(deleted_at=func.now()))

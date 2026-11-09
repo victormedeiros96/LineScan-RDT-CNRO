@@ -117,6 +117,7 @@ def processar_inferencia_job(
         output_folder=destino,
         sub_modelos=[m.model_dump() for m in cfg.modelos] if cfg.modelos else [],
         area_minima=cfg.area_minima,
+        viagem_nome=viagem_nome,
     )
     resultado = pipeline.run(
         tipo_pista=tipo_pista,

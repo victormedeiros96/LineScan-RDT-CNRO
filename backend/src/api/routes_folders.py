@@ -4,10 +4,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse
 from redis import Redis
 from rq import Queue
+from sqlalchemy.exc import SQLAlchemyError
 
 from src.core.config import Settings
 from src.core.dependencies import get_settings_dep
-from src.services import viagem_store
+from src.services import analise_store, viagem_store
 from src.services.image_processor import calcular_km_faixa
 from src.utils.tipo_pista import normalizar_tipo_pista
 
@@ -482,9 +483,14 @@ async def obter_analise(viagem_nome: str, settings: Settings = Depends(get_setti
     base = _resolver_viagem(settings, viagem_nome)
     if base is None:
         raise HTTPException(404, f"Viagem não encontrada: {viagem_nome}")
-    json_path = base / "analise_completa.json"
-    if not json_path.is_file():
-        raise HTTPException(404, "Análise ainda não realizada para esta viagem")
+
+    # Banco é a fonte preferencial (RDT1-12); JSON legado é o fallback.
+    analise = analise_store.carregar_analise(base.name)
+    if analise is None:
+        json_path = base / "analise_completa.json"
+        if not json_path.is_file():
+            raise HTTPException(404, "Análise ainda não realizada para esta viagem")
+        analise = _json.loads(json_path.read_text(encoding="utf-8"))
 
     config_path = base / "viagem_config.json"
     viagem_config: dict = {}
@@ -503,14 +509,15 @@ async def obter_analise(viagem_nome: str, settings: Settings = Depends(get_setti
     except (KeyError, ValueError):
         pass
 
-    analise: dict = _json.loads(json_path.read_text(encoding="utf-8"))
-    parametros_path = base / "parametros_adicionais.json"
-    parametros_por_km = {}
-    if parametros_path.is_file():
-        try:
-            parametros_por_km = _json.loads(parametros_path.read_text(encoding="utf-8"))
-        except Exception:
-            parametros_por_km = {}
+    parametros_por_km = analise_store.carregar_parametros(base.name)
+    if not parametros_por_km:
+        parametros_path = base / "parametros_adicionais.json"
+        parametros_por_km = {}
+        if parametros_path.is_file():
+            try:
+                parametros_por_km = _json.loads(parametros_path.read_text(encoding="utf-8"))
+            except Exception:
+                parametros_por_km = {}
 
     def _faixa_num(nome: str) -> int:
         """Extrai o índice numérico do nome da faixa (ex: lote_0000_faixa_2.png -> 2)."""
@@ -584,19 +591,42 @@ async def salvar_analise_editada(
     base = _resolver_viagem(settings, viagem_nome)
     if base is None:
         raise HTTPException(404, f"Viagem não encontrada: {viagem_nome}")
-    json_path = base / "analise_completa.json"
-    if not json_path.is_file():
-        raise HTTPException(404, "Análise ainda não realizada para esta viagem")
 
     deteccoes_por_imagem = body.get("deteccoes_por_imagem")
     if not isinstance(deteccoes_por_imagem, dict):
         raise HTTPException(400, "Campo 'deteccoes_por_imagem' é obrigatório")
 
-    analise: dict = _json.loads(json_path.read_text(encoding="utf-8"))
+    parametros_por_km = body.get("parametros_por_km")
+    if parametros_por_km is not None and not isinstance(parametros_por_km, dict):
+        raise HTTPException(400, "Campo 'parametros_por_km' deve ser um objeto")
+
+    # Banco é a fonte de verdade (RDT1-12): grava detecções + parâmetros em uma
+    # transação curta. Sem banco/viagem, cai no JSON legado.
+    imagens_db, parametros_db = 0, 0
+    banco_atualizado = False
+    try:
+        imagens_db, parametros_db = analise_store.persistir_analise(
+            viagem_nome=base.name,
+            deteccoes_por_imagem=deteccoes_por_imagem,
+            parametros_por_km=parametros_por_km,
+        )
+        banco_atualizado = True
+    except (LookupError, RuntimeError, SQLAlchemyError):
+        banco_atualizado = False
+
+    json_path = base / "analise_completa.json"
+    analise: dict = {}
+    if json_path.is_file():
+        try:
+            analise = _json.loads(json_path.read_text(encoding="utf-8"))
+        except Exception:
+            analise = {}
 
     atualizadas = 0
     for nome, deteccoes in deteccoes_por_imagem.items():
-        if nome not in analise or not isinstance(deteccoes, list):
+        if not isinstance(deteccoes, list):
+            continue
+        if nome not in analise:
             continue
         dados = analise[nome]
         if isinstance(dados, list):
@@ -606,17 +636,21 @@ async def salvar_analise_editada(
             analise[nome] = dados
         atualizadas += 1
 
-    json_path.write_text(_json.dumps(analise, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    parametros_por_km = body.get("parametros_por_km")
     parametros_atualizados = 0
     if isinstance(parametros_por_km, dict):
-        parametros_path = base / "parametros_adicionais.json"
-        parametros_path.write_text(_json.dumps(parametros_por_km, ensure_ascii=False, indent=2), encoding="utf-8")
         parametros_atualizados = len(parametros_por_km)
+        parametros_path = base / "parametros_adicionais.json"
+        parametros_path.write_text(
+            _json.dumps(parametros_por_km, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+    if analise:
+        json_path.write_text(
+            _json.dumps(analise, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
 
     return {
         "status": "ok",
-        "imagens_atualizadas": atualizadas,
-        "parametros_atualizados": parametros_atualizados,
+        "imagens_atualizadas": imagens_db if banco_atualizado else atualizadas,
+        "parametros_atualizados": parametros_db if banco_atualizado else parametros_atualizados,
     }
