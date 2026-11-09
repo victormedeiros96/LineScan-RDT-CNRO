@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor
@@ -9,8 +10,12 @@ from pathlib import Path
 import cv2
 import numpy as np
 import torch
+from sqlalchemy.exc import SQLAlchemyError
 
+from src.services import analise_store
 from src.services.inference_engine import YOLOv8ONNX
+
+logger = logging.getLogger(__name__)
 
 
 # ── Constantes da imagem de 5m ──
@@ -130,12 +135,14 @@ class InferencePipeline:
         output_folder: Path,
         sub_modelos: list[dict],
         area_minima: dict[str, int],
+        viagem_nome: str | None = None,
     ):
         self.modelos_dir = modelos_dir
         self.input_folder = input_folder
         self.output_folder = output_folder
         self.sub_modelos = sub_modelos
         self.area_minima = area_minima
+        self.viagem_nome = viagem_nome
         self.models: dict[str, object] = {}
 
     def _load_models(self):
@@ -542,6 +549,26 @@ class InferencePipeline:
                         "altura_px": faixa_meta.get("altura_px"),
                     },
                 }
-                self._save_json(all_results)
+
+                # Grava as detecções desta faixa no banco em uma transação curta
+                # (RDT1-12). Sem banco/faixa, o job segue e o JSON continua sendo
+                # escrito no fim como fallback/exportação.
+                try:
+                    analise_store.persistir_deteccoes_faixa(
+                        viagem_nome=self.viagem_nome or self.output_folder.name,
+                        arquivo=arquivo_faixa,
+                        deteccoes=detections,
+                    )
+                except (LookupError, RuntimeError, SQLAlchemyError) as exc:
+                    logger.warning(
+                        "Falha ao persistir detecções da faixa %s; mantendo JSON: %s",
+                        arquivo_faixa,
+                        exc,
+                    )
+
+        # JSON de compatibilidade/exportação escrito uma única vez ao fim do job,
+        # evitando estado parcial (a fonte de verdade passa a ser o banco).
+        if all_results:
+            self._save_json(all_results)
 
         return all_results
