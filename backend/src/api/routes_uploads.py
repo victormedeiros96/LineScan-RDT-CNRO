@@ -13,6 +13,7 @@ from src.core.config import Settings
 from src.core.dependencies import get_settings_dep
 from src.api.routes_folders import JOBS_LIST_KEY, JOBS_LIST_MAX
 from src.api.routes_folders import _get_queue as _get_uploads_queue  # reuse padrão de fila/redis
+from src.services import job_store
 
 router = APIRouter(prefix="/api/uploads", tags=["uploads"])
 
@@ -82,6 +83,7 @@ async def enviar_zip(
         raise HTTPException(500, f"Erro ao salvar ZIP: {e}")
 
     queue = _get_uploads_queue(settings)
+    meta = {"tipo": "upload_zip", "viagem": sanitize_viagem(viagem)}
     job = queue.enqueue(
         "src.jobs.extrair_zip_job",
         viagem=sanitize_viagem(viagem),
@@ -89,12 +91,19 @@ async def enviar_zip(
         job_timeout=7200,
         result_ttl=JOB_RESULT_TTL_SECONDS,
         failure_ttl=JOB_RESULT_TTL_SECONDS,
-        meta={"tipo": "upload_zip", "viagem": sanitize_viagem(viagem)},
+        meta=meta,
     )
 
     from redis import Redis as _Redis
     _Redis.from_url(settings.redis_url).lpush(JOBS_LIST_KEY, job.id)
     _Redis.from_url(settings.redis_url).ltrim(JOBS_LIST_KEY, 0, JOBS_LIST_MAX - 1)
+
+    job_store.registrar_job(
+        rq_job_id=job.id,
+        viagem_nome=sanitize_viagem(viagem),
+        tipo="upload_zip",
+        meta=meta,
+    )
 
     return {"status": "enviado", "job_id": job.id, "zip_path": str(zip_path)}
 
@@ -197,6 +206,7 @@ async def finalizar_sessao(
     jobs: list[dict] = []
     if zips_recebidos:
         queue = _get_uploads_queue(settings)
+        meta = {"tipo": "upload_zip", "viagem": viagem}
         job = queue.enqueue(
             "src.jobs.extrair_zip_job",
             viagem=viagem,
@@ -204,11 +214,17 @@ async def finalizar_sessao(
             job_timeout=7200,
             result_ttl=JOB_RESULT_TTL_SECONDS,
             failure_ttl=JOB_RESULT_TTL_SECONDS,
-            meta={"tipo": "upload_zip", "viagem": viagem},
+            meta=meta,
         )
         from redis import Redis as _Redis
         _Redis.from_url(settings.redis_url).lpush(JOBS_LIST_KEY, job.id)
         _Redis.from_url(settings.redis_url).ltrim(JOBS_LIST_KEY, 0, JOBS_LIST_MAX - 1)
+        job_store.registrar_job(
+            rq_job_id=job.id,
+            viagem_nome=viagem,
+            tipo="upload_zip",
+            meta=meta,
+        )
         jobs.append({"arquivo": zips_recebidos[0].name, "job_id": job.id})
 
     return {

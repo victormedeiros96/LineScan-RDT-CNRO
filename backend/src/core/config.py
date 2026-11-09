@@ -24,6 +24,7 @@ class Settings(BaseSettings):
 
     redis_url: str = "redis://redis:6379/0"
     database_url: str = ""
+    job_retention_days: int = 30
 
     host: str = "0.0.0.0"
     port: int = 8000

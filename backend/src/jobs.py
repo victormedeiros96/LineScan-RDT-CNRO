@@ -8,7 +8,7 @@ from rq import get_current_job
 from sqlalchemy.exc import SQLAlchemyError
 
 from src.core.config import get_settings
-from src.services import viagem_store
+from src.services import job_store, viagem_store
 from src.services.image_processor import processar_pasta, LARGURA_PX
 from src.services.inference_pipeline import InferencePipeline
 from src.services.model_loader import listar_modelos
@@ -26,9 +26,53 @@ def _set_progress(current: int, total: int, message: str) -> None:
         meta["progress_msg"] = message
         job.meta = meta
         job.save()
+        job_store.atualizar_progresso(
+            job.id,
+            {
+                "current_lote": current,
+                "total_lotes": total,
+                "progress_msg": message,
+            },
+        )
+
+
+def _executar_job(func, *args, **kwargs):
+    """Executa o job registrando o ciclo de vida no banco (RDT1-13)."""
+    job = get_current_job()
+    rq_job_id = job.id if job is not None else None
+    job_store.marcar_iniciado(rq_job_id)
+    try:
+        resultado = func(*args, **kwargs)
+    except Exception as exc:
+        job_store.falhar(rq_job_id, f"{type(exc).__name__}: {exc}")
+        raise
+    job_store.finalizar(rq_job_id, resultado if isinstance(resultado, dict) else {"resultado": resultado})
+    job_store.limpar_jobs_antigos()
+    return resultado
 
 
 def processar_imagens_job(
+    pasta_origem: str,
+    viagem_nome: str,
+    km_inicial: float | None = None,
+    km_final: float | None = None,
+    tipo_pista: str = "simples",
+    sentido: str = "crescente",
+    faixa: int | None = None,
+) -> dict:
+    return _executar_job(
+        _processar_imagens,
+        pasta_origem=pasta_origem,
+        viagem_nome=viagem_nome,
+        km_inicial=km_inicial,
+        km_final=km_final,
+        tipo_pista=tipo_pista,
+        sentido=sentido,
+        faixa=faixa,
+    )
+
+
+def _processar_imagens(
     pasta_origem: str,
     viagem_nome: str,
     km_inicial: float | None = None,
@@ -101,6 +145,23 @@ def processar_inferencia_job(
     sentido: str = "crescente",
     faixa: int | None = None,
 ) -> dict:
+    return _executar_job(
+        _processar_inferencia,
+        viagem_nome=viagem_nome,
+        tipo_modelo=tipo_modelo,
+        tipo_pista=tipo_pista,
+        sentido=sentido,
+        faixa=faixa,
+    )
+
+
+def _processar_inferencia(
+    viagem_nome: str,
+    tipo_modelo: str = "igg",
+    tipo_pista: str = "simples",
+    sentido: str = "crescente",
+    faixa: int | None = None,
+) -> dict:
     settings = get_settings()
     viagem_nome = viagem_nome.strip()
     destino = settings.dados_dir / viagem_nome
@@ -134,6 +195,10 @@ def processar_inferencia_job(
 
 
 def extrair_zip_job(viagem: str, zip_path: str) -> dict:
+    return _executar_job(_extrair_zip, viagem=viagem, zip_path=zip_path)
+
+
+def _extrair_zip(viagem: str, zip_path: str) -> dict:
     """Extrai um ZIP enviado por upload para dados/uploads/<viagem>/ de forma segura."""
     import zipfile
 
