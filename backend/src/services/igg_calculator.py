@@ -1,27 +1,37 @@
 from __future__ import annotations
 
 import re
-from collections import Counter, defaultdict
+from collections import Counter
 from pathlib import Path
 
 MAP_DNIT: dict[str, tuple[str, str, float, int]] = {
-    "Trincas":                    ("T1",  "Trincas Isoladas Tipo 1",       0.2, 1),
-    "Trinca em Bloco":            ("FC2", "FC-2 (Trinca Bloco/Jacaré)",    0.5, 2),
-    "Couro de Jacaré":            ("FC2", "FC-2 (Trinca Bloco/Jacaré)",    0.5, 2),
-    "Couro de Jacaré c/ Erosão":  ("FC3", "FC-3 (Jacaré c/ Erosão)",      0.8, 3),
-    "fc3":                        ("FC3", "FC-3 (Jacaré c/ Erosão)",      0.8, 3),
-    "Ondulação":                  ("O5",  "Ond./Panela/Escorreg.",         1.0, 0),
-    "Panela":                     ("O5",  "Ond./Panela/Escorreg.",         1.0, 0),
-    "Escorregamento":             ("O5",  "Ond./Panela/Escorreg.",         1.0, 0),
-    "Exsudação":                  ("EX",  "Exsudação",                     0.5, 0),
-    "Desgaste":                   ("D",   "Desgaste",                      0.3, 0),
-    "Remendo":                    ("R",   "Remendo",                       0.6, 0),
+    "Trincas":                        ("T1",  "Trincas Isoladas Tipo 1",            0.2, 1),
+    # Nome bruto do modelo de IA: significa trincas isoladas (Tipo 1), não a FC-3
+    # normativa. Mantido por compatibilidade com JSONs antigos.
+    "fc3":                            ("T1",  "Trincas Isoladas Tipo 1",            0.2, 1),
+    "Trinca em Bloco":                ("FC2", "FC-2 (Trinca Bloco/Jacaré)",         0.5, 2),
+    "Couro de Jacaré":                ("FC2", "FC-2 (Trinca Bloco/Jacaré)",         0.5, 2),
+    "Couro de Jacaré c/ Erosão":      ("FC3", "FC-3 (Jacaré/Bloco c/ Erosão)",      0.8, 3),
+    "Trinca em Bloco c/ Erosão":      ("FC3", "FC-3 (Jacaré/Bloco c/ Erosão)",      0.8, 3),
+    "TBE":                            ("FC3", "FC-3 (Jacaré/Bloco c/ Erosão)",      0.8, 3),
+    "Afundamento":                    ("T4",  "Afundamentos (ALP/ATP/ALC/ATC)",      0.9, 0),
+    "ALP":                            ("T4",  "Afundamentos (ALP/ATP/ALC/ATC)",      0.9, 0),
+    "ATP":                            ("T4",  "Afundamentos (ALP/ATP/ALC/ATC)",      0.9, 0),
+    "ALC":                            ("T4",  "Afundamentos (ALP/ATP/ALC/ATC)",      0.9, 0),
+    "ATC":                            ("T4",  "Afundamentos (ALP/ATP/ALC/ATC)",      0.9, 0),
+    "Ondulação":                      ("O5",  "Ond./Panela/Escorreg.",                1.0, 0),
+    "Panela":                         ("O5",  "Ond./Panela/Escorreg.",                1.0, 0),
+    "Escorregamento":                 ("O5",  "Ond./Panela/Escorreg.",                1.0, 0),
+    "Exsudação":                      ("EX",  "Exsudação",                            0.5, 0),
+    "Desgaste":                       ("D",   "Desgaste",                             0.3, 0),
+    "Remendo":                        ("R",   "Remendo",                              0.6, 0),
 }
 
 ALL_GROUPS: list[tuple[str, str, float]] = [
     ("T1",  "Trincas Isoladas Tipo 1",       0.2),
     ("FC2", "FC-2 (Trinca Bloco/Jacaré)",    0.5),
-    ("FC3", "FC-3 (Jacaré c/ Erosão)",       0.8),
+    ("FC3", "FC-3 (Jacaré/Bloco c/ Erosão)", 0.8),
+    ("T4",  "Afundamentos (ALP/ATP/ALC/ATC)", 0.9),
     ("O5",  "Ond./Panela/Escorreg.",         1.0),
     ("EX",  "Exsudação",                     0.5),
     ("D",   "Desgaste",                      0.3),
@@ -136,8 +146,8 @@ def calcular_igg_por_km(
 
     if medias_flechas:
         # Item 9: média aritmética dos valores médios das flechas (TRI e TRE)
-        F = sum(medias_flechas) / len(medias_flechas)
-        igi_flecha = round(F * 4 / 3, 2) if F <= 30 else 40.0
+        media_flecha = sum(medias_flechas) / len(medias_flechas)
+        igi_flecha = round(media_flecha * 4 / 3, 2) if media_flecha <= 30 else 40.0
 
         # Item 10: média aritmética das variâncias das flechas (ambas as trilhas)
         if variancias_flechas:

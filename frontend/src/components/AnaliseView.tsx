@@ -9,6 +9,7 @@ const PATHOLOGY_CLASSES: Record<string, { letter: string; name: string; color: s
   JE: { letter: 'JE', name: 'Couro de Jacaré c/ Erosão', color: '#008000' },
   J:  { letter: 'J',  name: 'Couro de Jacaré',           color: '#00FF00' },
   TB: { letter: 'TB', name: 'Trinca em Bloco',            color: '#FFD700' },
+  TBE:{ letter: 'TBE', name: 'Trinca em Bloco c/ Erosão', color: '#B45309' },
   T:  { letter: 'T',  name: 'Trincas',                    color: '#FFFF00' },
   R:  { letter: 'R',  name: 'Remendo',                    color: '#4169E1' },
   P:  { letter: 'P',  name: 'Panela',                     color: '#FF0000' },
@@ -20,7 +21,7 @@ const PATHOLOGY_CLASSES: Record<string, { letter: string; name: string; color: s
 }
 
 const PATHOLOGY_PRIORITY: Record<string, number> = {
-  ' ': 0, J: 10, JE: 10, D: 20, EX: 20, A: 25, O: 25, E: 25, T: 30, TB: 30, R: 40, P: 50,
+  ' ': 0, J: 10, JE: 10, D: 20, EX: 20, A: 25, O: 25, E: 25, T: 30, TB: 30, TBE: 30, R: 40, P: 50,
 }
 
 const PARAMETER_LABELS = ['TRI (mm)', 'TRE (mm)']
@@ -33,6 +34,7 @@ type ParametrosPorKm = Record<string, Record<string, string[]>>
 function getLetterFromClass(classe: string): string | null {
   const c = classe.toLowerCase()
   if (c.includes('fc3'))                              return 'T'
+  if (c.includes('bloco') && (c.includes('erosão') || c.includes('erosao'))) return 'TBE'
   if (c.includes('erosão') || c.includes('erosao'))  return 'JE'
   if (c.includes('jacaré') || c.includes('jacare'))  return 'J'
   if (c.includes('bloco'))                            return 'TB'
