@@ -1,0 +1,12 @@
+.git
+graphify-out
+dados
+backups
+logs
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.ruff_cache
+**/.venv
+frontend/node_modules
+frontend/dist

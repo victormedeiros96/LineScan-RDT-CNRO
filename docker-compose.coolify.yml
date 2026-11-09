@@ -1,0 +1,118 @@
+# Variante de deploy no Coolify (servidor com GPU NVIDIA).
+#
+# Diferenças em relação ao docker-compose.yml local:
+# - usa `runtime: nvidia` (padrão das outras stacks do servidor) no backend e no worker;
+# - não publica as portas internas (backend/redis/postgres ficam só na rede do compose);
+# - publica apenas o frontend em 8090, que é o alvo do túnel Cloudflare (0650163.xyz);
+# - `dados` vira volume nomeado (o diretório é gitignored e precisa persistir entre deploys);
+# - serviço `migrate` roda `alembic upgrade head` antes de subir backend e worker.
+#
+# Env obrigatórias no Coolify (nunca no repositório): POSTGRES_PASSWORD.
+# Opcionais: POSTGRES_DB (padrão rdt01), POSTGRES_USER (padrão rdt01),
+#            NVIDIA_VISIBLE_DEVICES (padrão all), DEBUG (padrão true).
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-rdt01}
+      POSTGRES_USER: ${POSTGRES_USER:-rdt01}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no Coolify}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  migrate:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile.coolify
+    command: alembic upgrade head
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-rdt01}:${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no Coolify}@postgres:5432/${POSTGRES_DB:-rdt01}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile.coolify
+    volumes:
+      - dados:/app/dados
+    environment:
+      - MODELOS_DIR=/app/modelos
+      - DADOS_DIR=/app/dados
+      - SOURCES_CONFIG=/app/config/sources.json
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-rdt01}:${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no Coolify}@postgres:5432/${POSTGRES_DB:-rdt01}
+      - DEBUG=${DEBUG:-true}
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    depends_on:
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)"
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    runtime: nvidia
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile.coolify
+    command: rq worker --url redis://redis:6379/0 rdt01-processing
+    volumes:
+      - dados:/app/dados
+    environment:
+      - MODELOS_DIR=/app/modelos
+      - DADOS_DIR=/app/dados
+      - SOURCES_CONFIG=/app/config/sources.json
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-rdt01}:${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no Coolify}@postgres:5432/${POSTGRES_DB:-rdt01}
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    depends_on:
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    runtime: nvidia
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "8090:80"
+    depends_on:
+      backend:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  dados:
