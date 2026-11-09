@@ -97,7 +97,8 @@ soft delete e/ou restore do backup (ver abaixo).
 |---|---|
 | `image_processor.py` | Processamento e concatenação de imagens linescan |
 | `inference_pipeline.py` | Execução da análise de detecção de patologias |
-| `model_loader.py` | Gerenciamento de modelos por tipo de análise |
+| `model_loader.py` | Leitura das configurações de modelo por tipo de análise |
+| `model_lifecycle.py` | Ciclo de vida dos modelos: lazy load, reuso e descarga ociosa (RDT1-16) |
 | `igg_calculator.py` | Cálculo do Índice de Gravidade Global por quilômetro |
 | `planilha_import.py` | Importação da planilha de afundamento das trilhas de roda (TRI/TRE) |
 | `routes_folders.py` | API principal (trabalhos, análise, uploads) |
@@ -119,6 +120,30 @@ O sistema detecta automaticamente as seguintes patologias:
 | J / JE | Couro de jacaré (com/sem erosão) |
 | P | Panela |
 | R | Remendo |
+
+### Ciclo de vida dos modelos (RDT1-16)
+
+Os modelos de visão (`.pt` do Ultralytics e `.onnx` do ONNX Runtime) são
+gerenciados por um `ModelManager` por processo (`backend` e `worker` têm o seu),
+em `backend/src/services/model_lifecycle.py`:
+
+* **Lazy load** — nada é carregado no startup; a primeira inferência dispara o
+  carregamento.
+* **Reuso** — enquanto um modelo está em uso (inferência em andamento) o mesmo
+  objeto é reaproveitado entre janelas e jobs; cada uso segura uma alça com
+  refcount, então o modelo só é descarregado quando o refcount volta a zero.
+* **TTL ocioso** — sem uso por `MODEL_IDLE_TTL_SECONDS` (padrão `300`, 5 min;
+  `0` desabilita), uma thread de manutenção descarrega o modelo: libera a
+  sessão ONNX (`close()`), faz `del`/`gc.collect()` e, havendo CUDA,
+  `torch.cuda.empty_cache()`.
+* **Observabilidade** — logs ao carregar/descarregar (com VRAM alocada/reservada
+  quando o contexto CUDA já existe) e `GET /debug/modelos`, que devolve os
+  modelos carregados, refcount, segundos ociosos e métricas de VRAM. O endpoint
+  não inicializa CUDA por conta própria (mantém o lazy load).
+
+A concorrência é protegida por um lock por processo: a descarga nunca ocorre com
+refcount > 0, e o carregamento é serializado. Não é necessário forçar
+`torch.cuda.ipc_collect()` no cenário atual (processo único por container).
 
 ### Rotulagem manual
 
@@ -366,6 +391,7 @@ Modelo em `.env.example` (valores de exemplo); o `.env` real é ignorado pelo gi
 | `SOURCES_CONFIG` | backend | não (`/app/config/sources.json`) | não | Configuração de fontes |
 | `DEBUG` | backend | não (`false`) | não | Modo de depuração |
 | `JOB_RETENTION_DAYS` | backend/worker | não (padrão 30) | não | Retenção de jobs antes do soft delete |
+| `MODEL_IDLE_TTL_SECONDS` | backend/worker | não (padrão 300) | não | Segundos ociosos antes de descarregar modelos e liberar VRAM; `0` desabilita |
 | `CORS_ORIGINS` | backend | não (`["*"]`) | não | Origens permitidas |
 | `NVIDIA_VISIBLE_DEVICES` | backend/worker | não | não | GPU exposta aos containers |
 | `NVIDIA_DRIVER_CAPABILITIES` | backend/worker | não | não | Capacidades do driver NVIDIA |
