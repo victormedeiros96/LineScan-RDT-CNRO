@@ -1,17 +1,16 @@
 from __future__ import annotations
 
 import json
+import tempfile
 from pathlib import Path
 
-import tempfile
-import os
+from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Response
-
+from src.api.routes_folders import _resolver_viagem
 from src.core.config import Settings
 from src.core.dependencies import get_settings_dep
-from src.api.routes_folders import _resolver_viagem
 from src.services import resultado_store
+from src.services.icp_import import NORMA_ICP, importar_icp
 from src.services.igg_calculator import (
     calcular_igg_por_km,
     montar_estacoes_por_km,
@@ -170,13 +169,74 @@ async def importar_planilha_endpoint(
     }
 
 
+@router.post("/icp/{viagem_nome}")
+async def importar_icp_endpoint(
+    viagem_nome: str,
+    file: UploadFile = File(...),
+    settings: Settings = Depends(get_settings_dep),
+):
+    """Importa a ficha de inspeção (XLSX/CSV), calcula e persiste o ICP por amostra."""
+    base = _resolver_viagem(settings, viagem_nome)
+    if base is None:
+        raise HTTPException(404, f"Viagem não encontrada: {viagem_nome}")
+
+    nome_arquivo = Path(file.filename or "ficha_icp.xlsx").name
+    if Path(nome_arquivo).suffix.lower() not in {".xlsx", ".xlsm", ".csv", ".xls"}:
+        raise HTTPException(
+            400, "Envie a ficha de inspeção em .xlsx, .xlsm ou .csv."
+        )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        caminho = Path(tmpdir) / nome_arquivo
+        caminho.write_bytes(await file.read())
+        try:
+            resultados = importar_icp(caminho)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    persistidos = resultado_store.persistir_resultados(
+        viagem_nome=base.name,
+        tipo_analise="icp",
+        resultados=resultados,
+        norma=NORMA_ICP,
+        reconciliar=True,
+    )
+
+    return {
+        "status": "ok",
+        "viagem": base.name,
+        "arquivo": nome_arquivo,
+        "total_amostras": len(resultados),
+        "persistidos": persistidos,
+        "resultados": resultados,
+    }
+
+
+@router.get("/icp/{viagem_nome}")
+async def listar_icp(
+    viagem_nome: str,
+    km: int | None = None,
+    settings: Settings = Depends(get_settings_dep),
+):
+    """Resultados de ICP persistidos por amostra, opcionalmente filtrados por KM."""
+    base = _resolver_viagem(settings, viagem_nome)
+    if base is None:
+        raise HTTPException(404, f"Viagem não encontrada: {viagem_nome}")
+    resultados = resultado_store.carregar_resultados(base.name, "icp")
+    if resultados is None:
+        raise HTTPException(503, "Banco de dados indisponível")
+    if km is not None:
+        resultados = [item for item in resultados if item.get("km") == km]
+    return resultados
+
+
 @router.post("/exportar/{viagem_nome}")
 async def exportar_viagem(
     viagem_nome: str,
     settings: Settings = Depends(get_settings_dep),
 ):
-    import io
     import csv
+    import io
 
     base = _resolver_viagem(settings, viagem_nome)
     if base is None:
@@ -200,7 +260,11 @@ async def exportar_viagem(
 
     agrupado = montar_estacoes_por_km(analise, viagem_nome, base)
     if not agrupado:
-        return Response(content="", media_type="text/csv", headers={"Content-Disposition": "attachment; filename=export.csv"})
+        return Response(
+            content="",
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=export.csv"},
+        )
 
     resultados = []
     for km_key, data in sorted(agrupado.items(), key=lambda x: int(x[0])):
