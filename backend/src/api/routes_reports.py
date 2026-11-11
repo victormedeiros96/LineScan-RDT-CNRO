@@ -10,6 +10,7 @@ from src.api.routes_folders import _resolver_viagem
 from src.core.config import Settings
 from src.core.dependencies import get_settings_dep
 from src.services import icp_placas, resultado_store
+from src.services.icp_import import NORMA_ICP, importar_icp
 from src.services.igg_calculator import (
     calcular_igg_por_km,
     montar_estacoes_por_km,
@@ -168,6 +169,67 @@ async def importar_planilha_endpoint(
     }
 
 
+@router.post("/icp/{viagem_nome}")
+async def importar_icp_endpoint(
+    viagem_nome: str,
+    file: UploadFile = File(...),
+    settings: Settings = Depends(get_settings_dep),
+):
+    """Importa a ficha de inspeção (XLSX/CSV), calcula e persiste o ICP por amostra."""
+    base = _resolver_viagem(settings, viagem_nome)
+    if base is None:
+        raise HTTPException(404, f"Viagem não encontrada: {viagem_nome}")
+
+    nome_arquivo = Path(file.filename or "ficha_icp.xlsx").name
+    if Path(nome_arquivo).suffix.lower() not in {".xlsx", ".xlsm", ".csv", ".xls"}:
+        raise HTTPException(
+            400, "Envie a ficha de inspeção em .xlsx, .xlsm ou .csv."
+        )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        caminho = Path(tmpdir) / nome_arquivo
+        caminho.write_bytes(await file.read())
+        try:
+            resultados = importar_icp(caminho)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    persistidos = resultado_store.persistir_resultados(
+        viagem_nome=base.name,
+        tipo_analise="icp",
+        resultados=resultados,
+        norma=NORMA_ICP,
+        reconciliar=True,
+    )
+
+    return {
+        "status": "ok",
+        "viagem": base.name,
+        "arquivo": nome_arquivo,
+        "total_amostras": len(resultados),
+        "persistidos": persistidos,
+        "resultados": resultados,
+    }
+
+
+@router.get("/icp/{viagem_nome}")
+async def listar_icp(
+    viagem_nome: str,
+    km: int | None = None,
+    settings: Settings = Depends(get_settings_dep),
+):
+    """Resultados de ICP persistidos por amostra, opcionalmente filtrados por KM."""
+    base = _resolver_viagem(settings, viagem_nome)
+    if base is None:
+        raise HTTPException(404, f"Viagem não encontrada: {viagem_nome}")
+    resultados = resultado_store.carregar_resultados(base.name, "icp")
+    if resultados is None:
+        raise HTTPException(503, "Banco de dados indisponível")
+    if km is not None:
+        resultados = [item for item in resultados if item.get("km") == km]
+    return resultados
+
+
 @router.post("/icp/{viagem_nome}/placas")
 async def gerar_placas_icp(
     viagem_nome: str,
@@ -288,6 +350,100 @@ async def listar_amostras_icp(
         "trecho": inventario.get("trecho"),
         "amostras": inventario.get("amostras", []),
     }
+
+
+@router.get("/icp/{viagem_nome}/exportar")
+async def exportar_icp(
+    viagem_nome: str,
+    settings: Settings = Depends(get_settings_dep),
+):
+    """Exporta o laudo do ICP por amostra (uma linha por defeito) em CSV."""
+    import csv
+    import io
+
+    from src.services.icp_calculator import DEFEITOS
+
+    base = _resolver_viagem(settings, viagem_nome)
+    if base is None:
+        raise HTTPException(404, f"Viagem não encontrada: {viagem_nome}")
+
+    resultados = resultado_store.carregar_resultados(base.name, "icp")
+    if resultados is None:
+        raise HTTPException(503, "Banco de dados indisponível")
+    if not resultados:
+        raise HTTPException(404, "Nenhum resultado de ICP para esta viagem.")
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(
+        [
+            "AMOSTRA",
+            "RODOVIA",
+            "KM_INICIAL",
+            "KM_FINAL",
+            "FAIXA",
+            "TOTAL_PLACAS",
+            "TIPO",
+            "DEFEITO",
+            "SEVERIDADE",
+            "DENSIDADE_PCT",
+            "PLACAS_AFETADAS",
+            "VD",
+            "VDT",
+            "Q",
+            "VDC",
+            "ICP",
+            "CONCEITO",
+        ]
+    )
+    ordem = {"A": 3, "M": 2, "B": 1, "U": 0}
+    for item in resultados:
+        detalhe = item
+        defeitos = item.get("defeitos") or []
+        base_row = [
+            item.get("amostra"),
+            detalhe.get("rodovia"),
+            detalhe.get("km_inicial"),
+            detalhe.get("km_final"),
+            detalhe.get("faixa"),
+            detalhe.get("total_placas"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            detalhe.get("vdt"),
+            detalhe.get("q"),
+            detalhe.get("vdc"),
+            item.get("valor"),
+            item.get("conceito"),
+        ]
+        if not defeitos:
+            writer.writerow(base_row)
+            continue
+        for defeito in sorted(
+            defeitos,
+            key=lambda d: (int(d.get("tipo", 0)), -ordem.get(str(d.get("severidade")), 0)),
+        ):
+            tipo = int(defeito.get("tipo", 0))
+            linha = list(base_row)
+            linha[6] = tipo
+            linha[7] = DEFEITOS.get(tipo)
+            linha[8] = defeito.get("severidade")
+            linha[9] = defeito.get("densidade")
+            linha[10] = defeito.get("placas_afetadas")
+            linha[11] = defeito.get("vd")
+            writer.writerow(linha)
+
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f"attachment; filename=icp_{base.name}.csv",
+            "Content-Type": "text/csv; charset=utf-8",
+        },
+    )
 
 
 @router.post("/exportar/{viagem_nome}")

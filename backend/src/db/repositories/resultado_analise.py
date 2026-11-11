@@ -12,7 +12,11 @@ from src.db.repositories.base import BaseRepository
 
 class ResultadoAnaliseRepository(BaseRepository):
     def get(
-        self, viagem_id: uuid.UUID, km: int, tipo_analise: str
+        self,
+        viagem_id: uuid.UUID,
+        km: int,
+        tipo_analise: str,
+        amostra: str | None = None,
     ) -> ResultadoAnalise | None:
         stmt = select(ResultadoAnalise).where(
             ResultadoAnalise.viagem_id == viagem_id,
@@ -20,6 +24,10 @@ class ResultadoAnaliseRepository(BaseRepository):
             ResultadoAnalise.tipo_analise == tipo_analise,
             ResultadoAnalise.deleted_at.is_(None),
         )
+        if amostra is None:
+            stmt = stmt.where(ResultadoAnalise.amostra.is_(None))
+        else:
+            stmt = stmt.where(ResultadoAnalise.amostra == amostra)
         return self.session.scalars(stmt).first()
 
     def upsert(
@@ -29,15 +37,20 @@ class ResultadoAnaliseRepository(BaseRepository):
         km: int,
         tipo_analise: str,
         valor: float | Decimal,
+        amostra: str | None = None,
         norma: str | None = None,
         conceito: str | None = None,
         n_estacoes: int | None = None,
         detalhe: dict[str, Any] | None = None,
     ) -> ResultadoAnalise:
-        resultado = self.get(viagem_id, km, tipo_analise)
+        resultado = self.get(viagem_id, km, tipo_analise, amostra)
         if resultado is None:
             resultado = ResultadoAnalise(
-                viagem_id=viagem_id, km=km, tipo_analise=tipo_analise, valor=valor
+                viagem_id=viagem_id,
+                km=km,
+                tipo_analise=tipo_analise,
+                amostra=amostra,
+                valor=valor,
             )
             self.session.add(resultado)
         resultado.valor = valor
@@ -78,5 +91,5 @@ class ResultadoAnaliseRepository(BaseRepository):
         )
         if tipo_analise is not None:
             stmt = stmt.where(ResultadoAnalise.tipo_analise == tipo_analise)
-        stmt = stmt.order_by(ResultadoAnalise.km)
+        stmt = stmt.order_by(ResultadoAnalise.km, ResultadoAnalise.amostra)
         return list(self.session.scalars(stmt))
