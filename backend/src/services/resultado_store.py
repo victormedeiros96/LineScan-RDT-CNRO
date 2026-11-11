@@ -31,6 +31,7 @@ from src.db.session import session_scope
 logger = logging.getLogger(__name__)
 
 NORMA_IGG = "DNIT 006/2003-PRO"
+NORMA_ICP = "DNIT 062/2004-PRO"
 _TIPOS = ("igg", "icp")
 
 
@@ -49,7 +50,11 @@ def _localizar_viagem(session: Session, viagem_nome: str) -> Viagem | None:
 
 
 def _norma_padrao(tipo_analise: str) -> str | None:
-    return NORMA_IGG if tipo_analise == "igg" else None
+    if tipo_analise == "igg":
+        return NORMA_IGG
+    if tipo_analise == "icp":
+        return NORMA_ICP
+    return None
 
 
 def _valor(resultado: dict[str, Any]) -> float | None:
@@ -64,8 +69,27 @@ def _detalhe(resultado: dict[str, Any]) -> dict[str, Any]:
     return {
         chave: valor
         for chave, valor in resultado.items()
-        if chave not in ("km", "valor", "igg", "icp", "indice", "conceito", "norma", "n_estacoes")
+        if chave
+        not in (
+            "km",
+            "amostra",
+            "valor",
+            "igg",
+            "icp",
+            "indice",
+            "conceito",
+            "norma",
+            "n_estacoes",
+        )
     }
+
+
+def _amostra(resultado: dict[str, Any]) -> str | None:
+    amostra = resultado.get("amostra")
+    if amostra is None:
+        return None
+    texto = str(amostra).strip()
+    return texto or None
 
 
 def persistir_resultados_em_sessao(
@@ -90,11 +114,17 @@ def persistir_resultados_em_sessao(
     ativos: set[uuid.UUID] = set()
     gravados = 0
     for resultado in resultados:
+        amostra = _amostra(resultado)
         km = resultado.get("km")
         try:
             km = int(km)
         except (TypeError, ValueError):
-            continue
+            # Amostras de ICP sem KM informado (ex.: PPV01) usam km 0 como
+            # sentinela; ``detalhe.km_informado`` guarda a informação original.
+            if tipo_analise == "icp" and amostra is not None:
+                km = 0
+            else:
+                continue
         valor = _valor(resultado)
         if valor is None:
             continue
@@ -102,6 +132,7 @@ def persistir_resultados_em_sessao(
             viagem_id=viagem.id,
             km=km,
             tipo_analise=tipo_analise,
+            amostra=amostra,
             valor=Decimal(str(round(valor, 2))),
             norma=resultado.get("norma") or norma,
             conceito=resultado.get("conceito"),
@@ -148,6 +179,7 @@ def persistir_resultados(
 def _item(resultado: ResultadoAnalise) -> dict[str, Any]:
     item: dict[str, Any] = {
         "km": resultado.km,
+        "amostra": resultado.amostra,
         "tipo_analise": resultado.tipo_analise,
         "valor": float(resultado.valor),
         "norma": resultado.norma,
@@ -158,6 +190,8 @@ def _item(resultado: ResultadoAnalise) -> dict[str, Any]:
         else None,
     }
     item.update(resultado.detalhe or {})
+    if resultado.tipo_analise == "icp":
+        item.setdefault("icp", float(resultado.valor))
     return item
 
 
