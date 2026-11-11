@@ -63,6 +63,19 @@ def test_importa_as_108_amostras_das_planilhas(tmp_path: Path) -> None:
     assert total == 108
 
 
+def test_amostra_sem_defeitos_vira_icp_100(tmp_path: Path) -> None:
+    """Abas sem nenhum defeito (as 4 em branco da RAR) entram com ICP 100."""
+    caminho = tmp_path / "branca.xlsx"
+    caminho.write_bytes(
+        montar_workbook([{"amostra": "ICP_12", "total_placas": 12, "defeitos": []}])
+    )
+
+    [item] = importar_icp(caminho)
+    assert item["icp"] == 100.0
+    assert item["conceito"] == "Excelente"
+    assert item["defeitos"] == []
+
+
 def test_importa_entradas_manuais_r_u(tmp_path: Path) -> None:
     """R/U digitados manualmente têm precedência sobre os códigos C/I."""
     caminho = tmp_path / "ppv01.xlsx"
