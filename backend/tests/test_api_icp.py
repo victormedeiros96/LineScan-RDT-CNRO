@@ -99,3 +99,54 @@ def test_arquivo_invalido_retorna_400(viagem: Path) -> None:
         files={"file": ("ficha.txt", b"x", "text/plain")},
     )
     assert resposta.status_code == 400
+
+
+def test_exporta_laudo_icp_em_csv(viagem: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    itens = [
+        {
+            "km": 33,
+            "amostra": "ICP_1",
+            "tipo_analise": "icp",
+            "valor": 84.11,
+            "conceito": "Muito Bom",
+            "rodovia": "BR-364",
+            "km_inicial": 33.6,
+            "km_final": 33.7,
+            "faixa": "2",
+            "total_placas": 20,
+            "vdt": 20.0,
+            "q": 1,
+            "vdc": 15.89,
+            "defeitos": [
+                {"tipo": 5, "severidade": "B", "densidade": 33.33, "placas_afetadas": 7, "vd": 2.0},
+                {"tipo": 10, "severidade": "U", "densidade": 100.0, "placas_afetadas": 20, "vd": 18.0},
+            ],
+        }
+    ]
+    monkeypatch.setattr(
+        resultado_store, "carregar_resultados", lambda *_args, **_kwargs: itens
+    )
+
+    resposta = _cliente(viagem).get("/api/relatorios/icp/Viagem ICP/exportar")
+
+    assert resposta.status_code == 200
+    assert "text/csv" in resposta.headers["content-type"]
+    assert "icp_Viagem ICP.csv" in resposta.headers["content-disposition"]
+    linhas = resposta.text.strip().splitlines()
+    assert linhas[0].startswith("AMOSTRA,RODOVIA,KM_INICIAL")
+    assert len(linhas) == 3
+    assert "ICP_1,BR-364" in linhas[1]
+    assert "Defeito na selagem das juntas" in linhas[1]
+    assert "Desgaste superficial" in linhas[2]
+
+
+def test_exporta_laudo_sem_resultados_retorna_404(
+    viagem: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        resultado_store, "carregar_resultados", lambda *_args, **_kwargs: []
+    )
+
+    resposta = _cliente(viagem).get("/api/relatorios/icp/Viagem ICP/exportar")
+
+    assert resposta.status_code == 404

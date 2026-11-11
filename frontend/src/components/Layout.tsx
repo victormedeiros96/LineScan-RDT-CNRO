@@ -1,11 +1,12 @@
 import { useState } from 'react'
 import { useAppStore, type View } from '../store'
-import { IconHome, IconImage, IconChevronsLeft, IconEye } from '../icons'
+import { IconHome, IconImage, IconChevronsLeft, IconEye, IconBarChart } from '../icons'
 
 const TABS: { id: View; label: string; icon: typeof IconHome }[] = [
   { id: 'home', label: 'Início', icon: IconHome },
   { id: 'jobs', label: 'Processamentos', icon: IconImage },
   { id: 'analise', label: 'Análise', icon: IconEye },
+  { id: 'icp', label: 'ICP', icon: IconBarChart },
   // { id: 'test', label: 'Teste', icon: IconEye },
 ]
 

@@ -2268,3 +2268,287 @@ html.light body {
   color: var(--primary);
   margin-left: auto;
 }
+
+/* ── ICP (pavimento rígido) ── */
+.icp-config-card {
+  margin-bottom: 1rem;
+}
+
+.icp-config-row {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.icp-viagem-field {
+  flex: 1 1 260px;
+}
+
+.icp-viagem-field input {
+  width: 100%;
+}
+
+.btn.is-disabled {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.icp-erro,
+.icp-aviso,
+.icp-sucesso {
+  margin: 0.65rem 0 0;
+  font-size: 0.82rem;
+}
+
+.icp-erro { color: var(--danger); }
+.icp-aviso { color: #f59e0b; }
+.icp-sucesso { color: var(--success); }
+
+.icp-resumo-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.icp-resumo-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 1rem 1.15rem;
+}
+
+.icp-resumo-rotulo {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.icp-resumo-valor {
+  font-size: 1.6rem;
+  font-weight: 800;
+  color: var(--primary);
+  line-height: 1.1;
+}
+
+.icp-conceito-lista {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.icp-conceito-chip {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.18rem 0.6rem;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.icp-resultados-card,
+.icp-placas-card,
+.icp-overlay-card {
+  margin-bottom: 1rem;
+}
+
+.icp-tabela {
+  border-collapse: collapse;
+  width: 100%;
+  min-width: 820px;
+  font-size: 0.78rem;
+}
+
+.icp-tabela th,
+.icp-tabela td {
+  border-bottom: 1px solid var(--border-color);
+  padding: 0.5rem 0.55rem;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.icp-tabela th {
+  position: sticky;
+  top: 0;
+  background: var(--bg-input);
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  z-index: 1;
+}
+
+.icp-linha {
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.icp-linha:hover,
+.icp-linha.aberta {
+  background: rgba(99, 102, 241, 0.08);
+}
+
+.icp-amostra {
+  font-weight: 700;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.icp-valor {
+  font-weight: 700;
+  color: var(--primary);
+}
+
+.icp-expandir {
+  color: var(--text-muted);
+  text-align: center;
+  width: 28px;
+}
+
+.icp-detalhe-linha > td {
+  padding: 0.55rem 0.75rem 0.9rem;
+  background: rgba(0, 0, 0, 0.16);
+}
+
+.icp-tabela-defeitos {
+  min-width: 640px;
+  font-size: 0.74rem;
+}
+
+.icp-tabela-defeitos th {
+  position: static;
+}
+
+.icp-detalhe-vazio {
+  margin: 0.35rem 0;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+}
+
+.icp-placas-form {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 0.85rem;
+}
+
+.icp-placas-form .form-group {
+  min-width: 120px;
+}
+
+.icp-placas-form .form-group input {
+  width: 100%;
+}
+
+.icp-inventario-resumo {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-top: 0.85rem;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+}
+
+.icp-inventario-resumo strong {
+  color: var(--text-primary);
+}
+
+.icp-overlay-body {
+  display: flex;
+  gap: 1rem;
+  margin-top: 0.85rem;
+  align-items: flex-start;
+}
+
+.icp-overlay-body .annotation-canvas-shell {
+  flex: 1 1 auto;
+  width: auto;
+  max-width: none;
+  aspect-ratio: auto;
+  max-height: 560px;
+}
+
+.icp-overlay-lista {
+  flex: 0 0 240px;
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 0.75rem;
+  max-height: 560px;
+  overflow-y: auto;
+}
+
+.icp-overlay-lista h4,
+.icp-placa-detalhe h4 {
+  margin: 0 0 0.5rem;
+  font-size: 0.85rem;
+}
+
+.icp-overlay-lista ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.icp-overlay-lista li {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.3rem 0.45rem;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.75rem;
+}
+
+.icp-overlay-lista li:hover,
+.icp-overlay-lista li.ativa {
+  background: rgba(99, 102, 241, 0.12);
+}
+
+.icp-placa-cor {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.icp-placa-id {
+  font-weight: 700;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.icp-placa-meta {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: 0.68rem;
+}
+
+.icp-placa-detalhe {
+  margin-top: 0.85rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border-color);
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+.icp-placa-detalhe p {
+  margin: 0.2rem 0;
+}
+
+@media (max-width: 900px) {
+  .icp-resumo-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .icp-overlay-body {
+    flex-direction: column;
+  }
+  .icp-overlay-lista {
+    flex: 1 1 auto;
+    width: 100%;
+    max-height: 260px;
+  }
+}

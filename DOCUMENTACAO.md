@@ -679,6 +679,40 @@ gera 29 placas (`backend/tests/test_icp_placas.py`). O modelo de segmentação d
 juntas (`trinca-detector`, GPL-3.0) não faz parte deste repositório — quando for
 entregue, basta alimentar as juntas/calibração.
 
+### Tela e relatório do ICP na UI (RDT1-19)
+
+O cartão **ICP** fica habilitado na tela inicial (a entrada é a ficha de
+inspeção, não um modelo de imagem) e abre a tela `IcpView` (aba **ICP** no menu).
+O fluxo completo é: informar a **viagem** → importar a ficha (`.xlsx`, `.xlsm`
+ou `.csv`) → conferir o resultado → gerar/conferir o overlay de placas →
+exportar o laudo.
+
+* **Resultado por amostra** — tabela com amostra, rodovia/KM, faixa, nº de
+  placas, VDT, `q`, VDC, ICP e conceito. Cada linha abre o detalhe dos defeitos
+  (tipo, nome, severidade, densidade, placas afetadas e VD).
+* **Resumo** — total de amostras, ICP médio, melhor/pior e distribuição por
+  conceito.
+* **Inventário de placas** — a própria tela gera as placas
+  (`POST /api/relatorios/icp/{viagem}/placas`) a partir de período/fase,
+  largura, comprimento máximo e placas por amostra, e lê o inventário
+  persistido (`GET .../placas`).
+* **Overlay** — a faixa original é exibida rotacionada 90° com a mesma
+  convenção do IGG; as ROIs de placa são desenhadas a partir de
+  `km_inicio/km_fim` e das metadados das faixas (`GET /api/pastas/faixas/{viagem}`),
+  e as patologias detectadas (quando existe análise) aparecem tracejadas.
+* **Exportar laudo** — `GET /api/relatorios/icp/{viagem}/exportar` devolve um
+  CSV com uma linha por defeito (amostra, metadados, tipo/defeito, severidade,
+  densidade, placas afetadas, VD) e as colunas de resumo (VDT, q, VDC, ICP,
+  conceito).
+* **Erros** — a mensagem do backend é exibida sem alteração (ficha inválida,
+  formato não suportado, viagem inexistente, banco indisponível). Sem inventário
+  ou com zero placas, a tela avisa para revisar a calibração e sinaliza amostras
+  sem placas.
+
+Regressão: `backend/tests/test_api_icp.py` cobre também a exportação (CSV com
+defeitos e 404 sem resultados).
+
+
 ### Backup e restore
 
 ```bash
@@ -698,10 +732,11 @@ host. Restaure com backend/worker parados para não haver conexões abertas dura
 * O schema é aplicado por `alembic upgrade head` (manual/de deploy); o container ainda não roda a
   migração automaticamente na subida.
 * O ICP de **rígido** está implementado como método da concessionária
-  (`icp_calculator.py`, 108 casos de regressão) e a ficha de inspeção já é
-  importada por `icp_import.py` / `POST /api/relatorios/icp/{viagem}`; falta ligar
-  essa importação ao job automático e definir o ICP do **flexível**, que segue em
-  aberto. A ETL dos jobs/resultados
+  (`icp_calculator.py`, 108 casos de regressão), a ficha de inspeção é
+  importada por `icp_import.py` / `POST /api/relatorios/icp/{viagem}` e a UI
+  (`IcpView`, RDT1-19) cobre importar → resultado → overlay → exportar; falta
+  ligar essa importação ao job automático e definir o ICP do **flexível**, que
+  segue em aberto. A ETL dos jobs/resultados
   legados (que vivem no Redis, não em `dados/`) continua pendente; a ETL por
   arquivo (RDT1-14) cobre viagem/config/blocos/faixas/análise/parâmetros.
 * O cutover e o rollback descritos acima precisam ser ensaiados/revisados em ambiente com
