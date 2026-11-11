@@ -1,17 +1,15 @@
 from __future__ import annotations
 
 import json
+import tempfile
 from pathlib import Path
 
-import tempfile
-import os
+from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Response
-
+from src.api.routes_folders import _resolver_viagem
 from src.core.config import Settings
 from src.core.dependencies import get_settings_dep
-from src.api.routes_folders import _resolver_viagem
-from src.services import resultado_store
+from src.services import icp_placas, resultado_store
 from src.services.igg_calculator import (
     calcular_igg_por_km,
     montar_estacoes_por_km,
@@ -170,13 +168,135 @@ async def importar_planilha_endpoint(
     }
 
 
+@router.post("/icp/{viagem_nome}/placas")
+async def gerar_placas_icp(
+    viagem_nome: str,
+    body: dict,
+    settings: Settings = Depends(get_settings_dep),
+):
+    """Gera o inventário de placas do rígido e as amostras de ICP.
+
+    Aceita ``periodo_m`` + ``fase_m`` de uma calibração já conhecida ou
+    ``juntas_km`` para calibrar pela rede periódica do ``juntas-detector``.
+    """
+    base = _resolver_viagem(settings, viagem_nome)
+    if base is None:
+        raise HTTPException(404, f"Viagem não encontrada: {viagem_nome}")
+
+    faixas = icp_placas.listar_faixas(base)
+    if not faixas:
+        raise HTTPException(
+            404,
+            "Nenhuma faixa encontrada (lote_*_meta.json com km_inicio/km_fim).",
+        )
+
+    calibracao: dict | None = None
+    mm_x = float(body.get("mm_por_px_x", icp_placas.MM_POR_PX))
+    mm_y = float(body.get("mm_por_px_y", icp_placas.MM_POR_PX))
+    try:
+        if body.get("juntas_km"):
+            calibracao = icp_placas.calibrar_por_juntas(
+                body["juntas_km"],
+                km0=min(faixa.km_inicio for faixa in faixas),
+                mm_por_px_y=mm_y,
+            )
+            periodo_m = float(calibracao["periodo_m"])
+            fase_m = float(calibracao["fase_m"])
+        else:
+            if body.get("periodo_m") is None:
+                raise ValueError(
+                    "Informe 'periodo_m' (calibração) ou 'juntas_km' (juntas para calibrar)."
+                )
+            periodo_m = float(body["periodo_m"])
+            fase_m = float(body.get("fase_m", 0.0))
+            calibracao = {
+                "periodo_m": round(periodo_m, 6),
+                "fase_m": round(fase_m, 6),
+                "mm_por_px_x": mm_x,
+                "mm_por_px_y": mm_y,
+                "norma": icp_placas.NORMA_ICP,
+            }
+
+        inventario = icp_placas.montar_inventario(
+            faixas,
+            periodo_m=periodo_m,
+            fase_m=fase_m,
+            largura_placa_m=float(body.get("largura_placa_m", icp_placas.LARGURA_PLACA_M)),
+            comprimento_max_m=float(
+                body.get("comprimento_max_m", icp_placas.COMPRIMENTO_MAX_M)
+            ),
+            tamanho_amostra=int(body.get("tamanho_amostra", icp_placas.TAMANHO_AMOSTRA)),
+            angulo_graus=float(body.get("angulo_graus", 0.0)),
+            mm_por_px_x=mm_x,
+            mm_por_px_y=mm_y,
+            calibracao=calibracao,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    if body.get("gerar_rois", True):
+        icp_placas.salvar_rois(
+            base,
+            faixas,
+            inventario["placas"],
+            mm_por_px_x=mm_x,
+            mm_por_px_y=mm_y,
+        )
+
+    icp_placas.salvar_inventario(base, inventario)
+    return {
+        "status": "ok",
+        "viagem": base.name,
+        **icp_placas.resumo_inventario(inventario),
+        "inventario": inventario,
+    }
+
+
+@router.get("/icp/{viagem_nome}/placas")
+async def obter_placas_icp(
+    viagem_nome: str,
+    settings: Settings = Depends(get_settings_dep),
+):
+    """Inventário de placas persistido (``icp_placas.json``)."""
+    base = _resolver_viagem(settings, viagem_nome)
+    if base is None:
+        raise HTTPException(404, f"Viagem não encontrada: {viagem_nome}")
+    inventario = icp_placas.carregar_inventario(base)
+    if inventario is None:
+        raise HTTPException(
+            404, "Inventário de placas não gerado para esta viagem."
+        )
+    return inventario
+
+
+@router.get("/icp/{viagem_nome}/amostras")
+async def listar_amostras_icp(
+    viagem_nome: str,
+    settings: Settings = Depends(get_settings_dep),
+):
+    """Amostras de até 20 placas do inventário persistido."""
+    base = _resolver_viagem(settings, viagem_nome)
+    if base is None:
+        raise HTTPException(404, f"Viagem não encontrada: {viagem_nome}")
+    inventario = icp_placas.carregar_inventario(base)
+    if inventario is None:
+        raise HTTPException(
+            404, "Inventário de placas não gerado para esta viagem."
+        )
+    return {
+        "norma": inventario.get("norma"),
+        "trecho": inventario.get("trecho"),
+        "amostras": inventario.get("amostras", []),
+    }
+
+
 @router.post("/exportar/{viagem_nome}")
 async def exportar_viagem(
     viagem_nome: str,
     settings: Settings = Depends(get_settings_dep),
 ):
-    import io
     import csv
+    import io
 
     base = _resolver_viagem(settings, viagem_nome)
     if base is None:
@@ -200,7 +320,11 @@ async def exportar_viagem(
 
     agrupado = montar_estacoes_por_km(analise, viagem_nome, base)
     if not agrupado:
-        return Response(content="", media_type="text/csv", headers={"Content-Disposition": "attachment; filename=export.csv"})
+        return Response(
+            content="",
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=export.csv"},
+        )
 
     resultados = []
     for km_key, data in sorted(agrupado.items(), key=lambda x: int(x[0])):
