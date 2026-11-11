@@ -570,6 +570,36 @@ Testes em `backend/tests/test_migracao_legado.py` (fixtures em disco, dry-run,
 idempotência, concorrência e rollback), rodando com `DATABASE_TEST_URL`/`pgserver`
 como os demais testes de banco.
 
+### Placas do pavimento rígido e amostras de ICP (RDT1-18)
+
+A etapa de placas (`backend/src/services/icp_placas.py`) usa o pacote
+`juntas-detector@v0.2.0` para materializar a **rede periódica de juntas
+transversais** e a grade de placas do rígido. Ela não depende de GPU: a
+geometria roda em CPU; a calibração (`periodo_m` + `fase_m`) ou as juntas
+conhecidas (`juntas_km`) entram pela API.
+
+* **Rede de juntas** — `placas.posicoes_rede(fase + k·P)` no strip global da
+  viagem; posições vêm da rede, não de detecções individuais.
+* **Placas** — `placas.poligonos` fecha cada placa entre duas transversais e
+  duas longitudinais; `placas.distancia_transversais` mede o comprimento em
+  metros. Placas > `comprimento_max_m` (padrão 9 m) ou em lacuna de amostragem
+  são descartadas.
+* **Coordenadas** — cada canto volta para a faixa original de 5 m
+  (`pontos_faixa`: arquivo, `x`, `y`) e também é exposto em `poligono_m`
+  (`x_m`, `km`). O topo da faixa é o menor KM.
+* **Amostras** — placas ordenadas por KM são agrupadas de 20 em 20; cada placa
+  recebe `amostra_id`.
+* **Persistência** — inventário em `dados/<viagem>/icp_placas.json` e, quando
+  os PNGs das faixas existem, ROI por placa em `dados/<viagem>/icp_rois/`.
+
+API: `POST /api/relatorios/icp/{viagem}/placas` gera/persiste;
+`GET .../icp/{viagem}/placas` e `GET .../icp/{viagem}/amostras` leem.
+
+Validação BR-364: 120 m com período de **5,12 m** gera 23 placas; com **4,10 m**
+gera 29 placas (`backend/tests/test_icp_placas.py`). O modelo de segmentação de
+juntas (`trinca-detector`, GPL-3.0) não faz parte deste repositório — quando for
+entregue, basta alimentar as juntas/calibração.
+
 ### Backup e restore
 
 ```bash
