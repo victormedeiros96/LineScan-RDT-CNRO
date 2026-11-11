@@ -73,7 +73,7 @@ abaixo resume onde cada dado vive hoje.
 | Detecções | `deteccao` | `<viagem>/analise_completa.json` | JSON ainda escrito uma vez ao fim do job, para exportação |
 | Parâmetros TRI/TRE | `parametro_km` | `<viagem>/parametros_adicionais.json` | Séries TRI/TRE + `extras` |
 | Jobs/histórico | `job` | — (legado vive no Redis) | Redis é só a fila; ETL não importa jobs antigos |
-| Resultados IGG/ICP | `resultado_analise` | — | `detalhe` em JSONB; ICP ainda sem cálculo |
+| Resultados IGG/ICP | `resultado_analise` | — | `detalhe` em JSONB; ICP calculado por `icp_calculator.py` |
 | Imagens e artefatos de modelo | Volume `dados/` / `modelos/` | `<viagem>/...`, `modelos/` | `modelos/` é montado read-only |
 
 - **Volume `dados/`** — criado em runtime e montado em `backend` e `worker`. Está no
@@ -100,6 +100,8 @@ soft delete e/ou restore do backup (ver abaixo).
 | `model_loader.py` | Leitura das configurações de modelo por tipo de análise |
 | `model_lifecycle.py` | Ciclo de vida dos modelos: lazy load, reuso e descarga ociosa (RDT1-16) |
 | `igg_calculator.py` | Cálculo do Índice de Gravidade Global por quilômetro |
+| `icp_calculator.py` | Cálculo do ICP de pavimento rígido (método da concessionária) |
+| `icp_curvas.py` | Curvas e correções do ICP geradas das planilhas ICP Pedágio |
 | `planilha_import.py` | Importação da planilha de afundamento das trilhas de roda (TRI/TRE) |
 | `routes_folders.py` | API principal (trabalhos, análise, uploads) |
 | `routes_reports.py` | Relatórios e exportação |
@@ -177,6 +179,41 @@ O IGG é calculado por quilômetro conforme a metodologia de avaliação de pavi
 | Regular | 40 < IGG ≤ 80 |
 | Ruim | 80 < IGG ≤ 160 |
 | Péssimo | IGG > 160 |
+
+---
+
+## Cálculo do ICP (pavimento rígido) — método da concessionária
+
+O cálculo fica em `backend/src/services/icp_calculator.py`; as curvas e correções
+ficam em `icp_curvas.py`, transcritas das fórmulas fechadas das planilhas
+**ICP Pedágio (Com Fórmula)** (Anexo II.1–II.9 e PPV01), repassadas pela
+concessionária no card RDT1-3. O motor é por **amostra** (até 20 placas) e foi
+travado por regressão com **108/108 amostras** dessas planilhas em
+`backend/tests/test_icp_calculator.py` (fixture em `backend/tests/fixtures/`).
+
+A base normativa é a DNIT 062/2004-PRO (CERL, 1979), mas o cálculo implementa de
+propósito as escolhas da planilha, que diferem da leitura estrita da norma:
+
+- `q` conta os tipos (exceto o 6.5) cujo maior VD é **`>= 5`** e não conta o 6.5;
+- `VDC = max(maior correção "q1 por defeito", curva q do VDT)`;
+- `q = 0` → `VDC = VDT`; `VDT = 0` → `ICP = 100`;
+- o 6.18 usa a curva da planilha (em A/M é praticamente a 6.4 do PDF);
+- o defeito 6.5 conta só a maior severidade presente.
+
+Consequência: a ficha de exemplo da norma fecha em **ICP 52,23** (VDC 47,77), não
+em 52,0. O ICP do **flexível** continua em aberto; esta norma é só para rígido.
+
+**Conceitos** (limites inferiores exclusivos, como na planilha):
+
+| Conceito | Faixa do ICP |
+|---|---|
+| Destruído | ICP < 10 |
+| Muito Ruim | 10 ≤ ICP < 25 |
+| Ruim | 25 ≤ ICP < 40 |
+| Razoável | 40 ≤ ICP < 55 |
+| Bom | 55 ≤ ICP < 70 |
+| Muito Bom | 70 ≤ ICP < 85 |
+| Excelente | 85 ≤ ICP ≤ 100 |
 
 ---
 
@@ -516,9 +553,10 @@ resultados:
   os KMs que saíram. `GET /api/relatorios/resultados/{viagem}?tipo=igg|icp` lê os
   resultados persistidos.
 * O `detalhe` (`JSONB`) guarda o restante do resultado (grupos, parcelas). O
-  cálculo do ICP ainda não existe no backend; o armazenamento já aceita
-  `tipo_analise = 'icp'`, mas nenhum resultado ICP é gerado enquanto a fórmula não
-  for definida.
+  cálculo do ICP de rígido existe em `icp_calculator.py` (método da
+  concessionária, ver [Cálculo do ICP](#cálculo-do-icp-pavimento-rígido--método-da-concessionária));
+  a persistência já aceita `tipo_analise = 'icp'`, mas a geração/persistência dos
+  resultados ICP ainda não está ligada ao job.
 * Sem banco configurado/indisponível, todas as operações de job/resultado são
   *best-effort* (apenas logam aviso); a API e o worker continuam funcionando com o
   fallback legado.
@@ -588,10 +626,11 @@ host. Restaure com backend/worker parados para não haver conexões abertas dura
 
 * O schema é aplicado por `alembic upgrade head` (manual/de deploy); o container ainda não roda a
   migração automaticamente na subida.
-* Método do ICP (flexível e rígido) segue em aberto; só há armazenamento de
-  resultados ICP, sem cálculo. A ETL dos jobs/resultados legados (que vivem no
-  Redis, não em `dados/`) continua pendente; a ETL por arquivo (RDT1-14) cobre
-  viagem/config/blocos/faixas/análise/parâmetros.
+* O ICP de **rígido** está implementado como método da concessionária
+  (`icp_calculator.py`, 108 casos de regressão); falta ligar o cálculo ao job e
+  definir o ICP do **flexível**, que segue em aberto. A ETL dos jobs/resultados
+  legados (que vivem no Redis, não em `dados/`) continua pendente; a ETL por
+  arquivo (RDT1-14) cobre viagem/config/blocos/faixas/análise/parâmetros.
 * O cutover e o rollback descritos acima precisam ser ensaiados/revisados em ambiente com
   Docker e PostgreSQL antes de serem considerados aprovados; este workspace não tem Docker,
   `psql` nem as dependências Python, então só os comandos e o dry-run da ETL são verificáveis
