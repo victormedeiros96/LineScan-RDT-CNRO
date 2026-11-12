@@ -9,6 +9,9 @@ python-multipart>=0.0.18
 opencv-contrib-python-headless>=4.10.0
 Pillow>=11.0.0
 numpy>=2.0.0
+# Usado pelo trinca-detector (skeletonize em nuclio/model_handler.py) na
+# detecção automática de juntas do ICP. Não é declarado pelo juntas-detector.
+scikit-image>=0.24.0
 redis>=5.2.0
 rq>=2.0.0
 onnxruntime-gpu>=1.20.0
