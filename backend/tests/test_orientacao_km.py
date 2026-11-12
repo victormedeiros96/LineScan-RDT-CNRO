@@ -172,7 +172,8 @@ def test_processar_pasta_escolhe_faixa_conforme_sentido(monkeypatch, tmp_path) -
     monkeypatch.setattr(ip, "_processar_lote", fake_lote)
 
     ip.processar_pasta(origem, tmp_path / "c", sentido="crescente", tipo_pista="dupla", faixa=2, workers=1)
-    assert capturado["faixa_alvo"] == 0
+    # O IGG agora recebe uma sequência de faixas-alvo (o ICP usa as 4 do bloco).
+    assert tuple(capturado["faixa_alvo"]) == (0,)
 
     ip.processar_pasta(origem, tmp_path / "d", sentido="decrescente", tipo_pista="dupla", faixa=2, workers=1)
-    assert capturado["faixa_alvo"] == 3
+    assert tuple(capturado["faixa_alvo"]) == (3,)

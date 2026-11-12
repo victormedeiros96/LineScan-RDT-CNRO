@@ -141,10 +141,10 @@ def _processar_imagens(
         "destino": str(destino),
         "tipo_analise": tipo_analise,
     }
-    if tipo_analise == "icp":
-        resultado.update(_processar_placas_icp(destino, settings, juntas))
 
-    # Grava config/blocos/faixas no banco em uma única transação. Durante a
+    # Grava config/blocos/faixas no banco em uma única transação antes da etapa
+    # de placas: se a calibração/detecção falhar, o trecho continua registrado e
+    # o job conclui com aviso (não perde a concatenação já produzida). Durante a
     # transição, uma falha aqui não invalida a concatenação: os JSONs legados
     # (viagem_config.json e lote_*_meta.json) continuam sendo a fonte de fallback.
     try:
@@ -160,6 +160,23 @@ def _processar_imagens(
             viagem_nome,
             exc,
         )
+
+    if tipo_analise == "icp":
+        _set_progress(len(lotes), len(lotes), "Calibrando juntas e montando placas (ICP)")
+        try:
+            resultado.update(_processar_placas_icp(destino, settings, juntas))
+            resultado["placas_geradas"] = True
+        except (RuntimeError, ValueError) as exc:
+            # Fallback explícito: sem imagens/faixas ou sem calibração o job do
+            # rígido não pode montar as placas, mas conclui com aviso em vez de
+            # "sucesso silencioso" (o resultado fica consultável no histórico).
+            logger.warning(
+                "ICP sem placas na viagem %s: %s", viagem_nome, exc
+            )
+            resultado["placas_geradas"] = False
+            resultado["avisos"] = [
+                "Placas do ICP não geradas: " + str(exc)
+            ]
 
     return resultado
 
@@ -204,6 +221,9 @@ def _processar_placas_icp(
         "total_rois": total_rois,
         "placas_descartadas": len(inventario.get("descartadas") or []),
         "calibracao": calibracao,
+        # Resumo estruturado (trecho + amostras) também vai para o resultado do
+        # job no banco; o inventário completo continua em icp_placas.json.
+        "inventario_resumo": icp_placas.resumo_inventario(inventario),
     }
 
 

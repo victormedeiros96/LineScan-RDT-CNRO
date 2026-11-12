@@ -710,8 +710,15 @@ Configuração em `modelos/icp/config.json`, bloco `"juntas"`:
 ```
 
 `Settings` também aceita `ICP_NUCLIO_DIR`, `ICP_MODELO_PT`, `ICP_LIMIAR_JUNTAS`,
-`ICP_ORDEM_INVERTIDA` e `ICP_MM_POR_PX_Y`. Quando o modelo não está disponível, o
-job do rígido falha com mensagem explícita (não conclui silenciosamente).
+`ICP_ORDEM_INVERTIDA` e `ICP_MM_POR_PX_Y`. A configuração/blocos/faixas são
+persistidos no banco **antes** da etapa de placas. Se faltar modelo, calibração
+ou imagens, o job do rígido conclui com **aviso explícito** (`placas_geradas =
+false` e `avisos` no resultado, exibido em **Processamentos**) em vez de
+"sucesso silencioso"; a concatenação já produzida não é perdida.
+
+O resultado do job guarda a calibração e um resumo estruturado do inventário
+(`inventario_resumo`: trecho e amostras) no banco; o inventário completo
+continua em `icp_placas.json` para consulta/transição.
 
 Os pesos/modelo vêm do release público
 `https://github.com/victormedeiros96/trinca-detector-public/releases/tag/0.1`
