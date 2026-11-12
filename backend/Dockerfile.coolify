@@ -16,6 +16,22 @@ FROM base AS deps
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir --break-system-packages -r requirements.txt
 
+# ---- Modelo de juntas do rígido (GPL-3.0, release público) ----
+# Baixa o código + pesos na construção para o Coolify não depender de bind mount.
+# O trinca-detector fica isolado em /opt/trinca-detector e é acessado por
+# adaptador (ProvedorTrincaDetector); ver scripts/baixar_modelo_trinca.sh.
+FROM alpine:3.20 AS modelo-icp
+ARG TRINCA_RELEASE=https://github.com/victormedeiros96/trinca-detector-public/releases/download/0.1
+ARG TRINCA_SHA256=901b70ad6c8995c20b1a32a61ae11562d3eb54c85f71e94034582a1b5590c3e6
+RUN apk add --no-cache curl unzip \
+ && mkdir -p /opt/trinca-detector/nuclio/modelos \
+ && curl -fsSL "$TRINCA_RELEASE/trinca-detector-main.zip" -o /tmp/main.zip \
+ && unzip -q /tmp/main.zip -d /tmp/extract \
+ && cp -a /tmp/extract/trinca-detector-main/. /opt/trinca-detector/ \
+ && curl -fsSL "$TRINCA_RELEASE/trinca_junta_limpo_ts.pt" \
+      -o /opt/trinca-detector/nuclio/modelos/trinca_junta_limpo_ts.pt \
+ && echo "$TRINCA_SHA256  /opt/trinca-detector/nuclio/modelos/trinca_junta_limpo_ts.pt" | sha256sum -c -
+
 # ---- Runtime ----
 FROM deps AS runtime
 COPY backend/ ./
@@ -24,6 +40,7 @@ COPY backend/ ./
 # runtime, então o backend veria /app/modelos vazio.
 COPY modelos/ /app/modelos
 COPY sources.json /app/config/sources.json
+COPY --from=modelo-icp /opt/trinca-detector /opt/trinca-detector
 EXPOSE 8000
 
 CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
