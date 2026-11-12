@@ -1,0 +1,16 @@
+{
+  "nome": "Juntas do rígido (trinca-detector)",
+  "arquivo": "",
+  "classes": {},
+  "modelos": [],
+  "cores": {},
+  "input_shape": [1, 3, 640, 640],
+  "area_minima": {},
+  "juntas": {
+    "nuclio_dir": "/opt/trinca-detector/nuclio",
+    "modelo_pt": "/opt/trinca-detector/nuclio/modelos/trinca_junta_limpo_ts.pt",
+    "limiar": 0.8,
+    "ordem_invertida": true,
+    "mm_por_px_y": 1.953125
+  }
+}

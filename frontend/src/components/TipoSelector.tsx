@@ -45,7 +45,6 @@ function formatarModelos(modelo: ModeloInfo): string {
 
 export function TipoSelector() {
   const setAnalysisType = useAppStore((s) => s.setAnalysisType)
-  const setCurrentView = useAppStore((s) => s.setCurrentView)
   const [modelos, setModelos] = useState<ModeloInfo[]>([])
   const [loading, setLoading] = useState(true)
 
@@ -87,18 +86,17 @@ export function TipoSelector() {
           <div
             className="cartao"
             style={{ '--cor-accent': '#10b981' } as React.CSSProperties}
-            onClick={() => {
-              const icpModel = modelos.find((m) => m.tipo === 'icp')
-              if (icpModel) {
-                setAnalysisType('icp', icpModel)
-              }
-              setCurrentView('icp')
-            }}
+            onClick={() =>
+              setAnalysisType(
+                'icp',
+                modelos.find((m) => m.tipo === 'icp') ?? null,
+              )
+            }
           >
             <span className="cartao-icone"><IconImage size={40} /></span>
             <h2>ICP</h2>
             <p>Índice de Condição do Pavimento — inspeção de pavimento rígido por amostra (DNIT 062/2004-PRO).</p>
-            <span className="cartao-modelo">Entrada: ficha de inspeção (.xlsx, .xlsm ou .csv)</span>
+            <span className="cartao-modelo">Imagens + juntas automáticas; resultado pela ficha de inspeção</span>
           </div>
         </div>
       )}

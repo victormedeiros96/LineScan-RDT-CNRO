@@ -29,6 +29,16 @@ class Settings(BaseSettings):
     # 0 desabilita a descarga automática. Padrão: 5 min.
     model_idle_ttl_seconds: int = 300
 
+    # Juntas do pavimento rígido (ICP): modelo externo trinca-detector (GPL-3.0).
+    # Podem ser sobrescritos pelo bloco "juntas" de modelos/icp/config.json.
+    icp_nuclio_dir: Path = Path("/opt/trinca-detector/nuclio")
+    icp_modelo_pt: Path = Path(
+        "/opt/trinca-detector/nuclio/modelos/trinca_junta_limpo_ts.pt"
+    )
+    icp_limiar_juntas: float = 0.8
+    icp_ordem_invertida: bool = True
+    icp_mm_por_px_y: float = 2000.0 / 1024.0
+
     host: str = "0.0.0.0"
     port: int = 8000
 

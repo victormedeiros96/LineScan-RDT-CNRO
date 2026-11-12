@@ -33,7 +33,11 @@ export function ViagemConfigForm() {
         </button>
         <h1>Configuração do Trecho</h1>
         <p className="config-subtitulo">
-          {analysisType?.toUpperCase()} — {modelo?.config.nome}
+          {analysisType?.toUpperCase()} —{' '}
+          {modelo?.config.nome ??
+            (analysisType === 'icp'
+              ? 'detecção automática de juntas (DNIT 062/2004-PRO)'
+              : '')}
         </p>
       </div>
 

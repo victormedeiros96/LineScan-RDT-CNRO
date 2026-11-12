@@ -24,7 +24,7 @@ interface AppState {
   currentView: View
   theme: Theme
   viagemAnaliseNome: string | null
-  setAnalysisType: (tipo: 'igg' | 'icp', modelo: ModeloInfo) => void
+  setAnalysisType: (tipo: 'igg' | 'icp', modelo: ModeloInfo | null) => void
   setViagem: (v: ViagemConfig) => void
   setFolderPath: (path: string) => void
   setCurrentView: (view: View) => void

@@ -675,9 +675,53 @@ API: `POST /api/relatorios/icp/{viagem}/placas` gera/persiste;
 `GET .../icp/{viagem}/placas` e `GET .../icp/{viagem}/amostras` leem.
 
 Validação BR-364: 120 m com período de **5,12 m** gera 23 placas; com **4,10 m**
-gera 29 placas (`backend/tests/test_icp_placas.py`). O modelo de segmentação de
-juntas (`trinca-detector`, GPL-3.0) não faz parte deste repositório — quando for
-entregue, basta alimentar as juntas/calibração.
+gera 29 placas (`backend/tests/test_icp_placas.py`).
+
+### Processamento e juntas no job do rígido (RDT1-21 / RDT1-22)
+
+O cartão **ICP** inicia o mesmo fluxo das imagens (configuração → upload →
+processamento), mas passa `tipo_analise = "icp"` para a API. O job então:
+
+1. concatena **todas as faixas de 5 m em contínuo** (sem pular blocos e sem a
+   amostragem 25/50 do IGG), porque as amostras do ICP são grupos de 20 placas;
+2. calibra as juntas do trecho e materializa o inventário de placas, as amostras
+   e as ROIs (`icp_placas.json`, `icp_juntas.json`, `icp_rois/`).
+
+A calibração (`backend/src/services/icp_juntas.py`) aceita, nesta ordem:
+
+* `juntas_km` (lista de KM absolutos) — override manual/depuração;
+* `periodo_m` + `fase_m` — calibração explícita;
+* **detecção automática**: pacote `juntas-detector` v0.2.0 (wheel) +
+  modelo externo `trinca-detector` v2.1.0 (GPL-3.0), via `ProvedorTrincaDetector`.
+  O detector devolve o período/fase por rede periódica; as posições individuais
+  não são usadas para montar a grade.
+
+Configuração em `modelos/icp/config.json`, bloco `"juntas"`:
+
+```json
+{
+  "juntas": {
+    "nuclio_dir": "/opt/trinca-detector/nuclio",
+    "modelo_pt": "/opt/trinca-detector/nuclio/modelos/trinca_junta_limpo_ts.pt",
+    "limiar": 0.8,
+    "mm_por_px_y": 1.953125
+  }
+}
+```
+
+`Settings` também aceita `ICP_NUCLIO_DIR`, `ICP_MODELO_PT`, `ICP_LIMIAR_JUNTAS`,
+`ICP_ORDEM_INVERTIDA` e `ICP_MM_POR_PX_Y`. Quando o modelo não está disponível, o
+job do rígido falha com mensagem explícita (não conclui silenciosamente).
+
+Os pesos/modelo vêm do release público
+`https://github.com/victormedeiros96/trinca-detector-public/releases/tag/0.1`
+(`trinca_junta_limpo_ts.pt`, sha256 `901b70ad…c3e6`). A distribuição recomendada
+é uma imagem Docker própria com o `nuclio` + pesos; o `trinca-detector` é GPL-3.0
+e permanece isolado, acessado por adaptador.
+
+O fluxo do processamento segue com o job visível em **Processamentos**. Ao
+concluir, o botão **Abrir ICP** leva à tela de ficha/resultado. A calibração
+manual continua disponível na própria tela do ICP (`POST .../placas`).
 
 ### Tela e relatório do ICP na UI (RDT1-19)
 
@@ -732,11 +776,14 @@ host. Restaure com backend/worker parados para não haver conexões abertas dura
 * O schema é aplicado por `alembic upgrade head` (manual/de deploy); o container ainda não roda a
   migração automaticamente na subida.
 * O ICP de **rígido** está implementado como método da concessionária
-  (`icp_calculator.py`, 108 casos de regressão), a ficha de inspeção é
-  importada por `icp_import.py` / `POST /api/relatorios/icp/{viagem}` e a UI
-  (`IcpView`, RDT1-19) cobre importar → resultado → overlay → exportar; falta
-  ligar essa importação ao job automático e definir o ICP do **flexível**, que
-  segue em aberto. A ETL dos jobs/resultados
+  (`icp_calculator.py`, 108 casos de regressão) e o job do rígido (RDT1-21)
+  gera faixas contínuas, juntas e placas (RDT1-22). A ficha de inspeção continua
+  sendo importada separadamente (`icp_import.py` / `POST /api/relatorios/icp/{viagem}`)
+  e a UI (`IcpView`, RDT1-19) cobre importar → resultado → overlay → exportar.
+  Ainda falta: edição manual das patologias na imagem (#23), cálculo por trecho
+  (#25), laudo completo (#26) e definir o ICP do **flexível**, que segue em
+  aberto. O modelo de **patologias** do rígido (além das juntas) também fica
+  para depois. A ETL dos jobs/resultados
   legados (que vivem no Redis, não em `dados/`) continua pendente; a ETL por
   arquivo (RDT1-14) cobre viagem/config/blocos/faixas/análise/parâmetros.
 * O cutover e o rollback descritos acima precisam ser ensaiados/revisados em ambiente com

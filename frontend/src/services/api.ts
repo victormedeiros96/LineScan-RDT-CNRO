@@ -89,6 +89,8 @@ export async function processarPasta(
   tipoPista?: string,
   sentido?: string,
   faixa?: number | null,
+  tipoAnalise: 'igg' | 'icp' = 'igg',
+  juntas?: Record<string, unknown>,
 ): Promise<JobEnqueueResponse> {
   const { data } = await api.post('/pastas/processar', {
     pasta_origem: pastaOrigem,
@@ -98,6 +100,8 @@ export async function processarPasta(
     tipo_pista: tipoPista,
     sentido: sentido,
     faixa: faixa,
+    tipo_analise: tipoAnalise,
+    juntas,
   })
   return data
 }
@@ -120,6 +124,7 @@ export interface JobInfo {
     faixa?: number | null
     tipo_modelo?: string
     tipo?: string
+    tipo_analise?: string
   }
   progress?: {
     current_lote: number
@@ -130,6 +135,11 @@ export interface JobInfo {
     total_lotes: number
     lotes: LoteInfo[]
     destino: string
+    tipo_analise?: string
+    total_faixas?: number
+    total_placas?: number
+    total_amostras?: number
+    total_rois?: number
   }
   error?: string
   criado_em?: string

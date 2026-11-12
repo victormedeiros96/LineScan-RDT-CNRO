@@ -18,7 +18,7 @@ tqdm==4.67.1
 ultralytics==8.3.163
 
 # Grade de juntas/ROIs de placas do pavimento rígido (ICP, DNIT 062/2004-PRO).
-juntas-detector @ git+https://github.com/victormedeiros96/juntas-detector.git@v0.2.0
+juntas-detector @ https://github.com/victormedeiros96/juntas-detector/releases/download/v0.2.0/juntas_detector-0.2.0-py3-none-any.whl
 
 psycopg[binary]>=3.2
 sqlalchemy>=2.0
