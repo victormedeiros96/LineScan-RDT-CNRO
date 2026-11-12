@@ -6,6 +6,7 @@ import { Processing } from './components/Processing'
 import { Layout } from './components/Layout'
 import { JobsList } from './components/JobsList'
 import { AnaliseView } from './components/AnaliseView'
+import { IcpView } from './components/IcpView'
 import { TestInference } from './components/TestInference'
 import { useAppStore } from './store'
 
@@ -57,6 +58,7 @@ export default function App() {
       </div>
     ),
     analise: <AnaliseView />,
+    icp: <IcpView />,
     test: <TestInference />,
   }
 

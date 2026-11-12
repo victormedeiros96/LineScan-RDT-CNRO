@@ -137,3 +137,95 @@ export interface Fonte {
   origem: string
   destino: string
 }
+
+// ── ICP (pavimento rígido, DNIT 062/2004-PRO) ────────────────────────────────
+export interface IcpDefeito {
+  tipo: number
+  severidade: string
+  densidade: number
+  vd: number
+  placas_afetadas?: number | null
+}
+
+export interface IcpResultado {
+  amostra: string
+  rodovia: string | null
+  km: number | null
+  km_inicial: number | null
+  km_final: number | null
+  km_informado: boolean
+  local: string | null
+  pedagio: number | null
+  faixa: string | null
+  data: string | null
+  operador: string | null
+  total_placas: number
+  defeitos: IcpDefeito[]
+  vdt: number
+  q: number
+  vdc: number
+  icp: number
+  conceito: string
+  norma: string
+  valor?: number
+}
+
+export interface IcpImportResponse {
+  status: string
+  viagem: string
+  arquivo: string
+  total_amostras: number
+  persistidos: number
+  resultados: IcpResultado[]
+}
+
+export interface IcpPontoFaixa {
+  arquivo: string
+  faixa_index: number
+  x: number
+  y: number
+}
+
+export interface IcpPlaca {
+  id: string
+  km: number
+  km_inicio: number
+  km_fim: number
+  comprimento_m: number
+  largura_m: number
+  bloco_indice: number
+  faixa: string
+  faixa_index: number
+  faixas: string[]
+  poligono: number[][]
+  pontos_faixa: IcpPontoFaixa[]
+  amostra_id: string
+  roi?: { arquivo: string; x: number; y: number; largura: number; altura: number }
+}
+
+export interface IcpAmostra {
+  id: string
+  indice: number
+  km_inicio: number
+  km_fim: number
+  comprimento_m: number
+  n_placas: number
+  placas: string[]
+}
+
+export interface IcpInventario {
+  norma: string
+  gerado_em: string | null
+  calibracao: Record<string, unknown>
+  trecho: { km_inicio: number; km_fim: number; n_faixas: number }
+  amostras: IcpAmostra[]
+  placas: IcpPlaca[]
+  descartadas: unknown[]
+}
+
+export interface IcpPlacasResponse {
+  status: string
+  viagem: string
+  inventario?: IcpInventario
+  [key: string]: unknown
+}

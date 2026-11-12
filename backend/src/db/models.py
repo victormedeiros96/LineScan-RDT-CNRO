@@ -333,6 +333,7 @@ class ResultadoAnalise(Base, TimestampMixin):
     )
     km: Mapped[int] = mapped_column(Integer, nullable=False)
     tipo_analise: Mapped[str] = mapped_column(Text, nullable=False)
+    amostra: Mapped[str | None] = mapped_column(Text)
     norma: Mapped[str | None] = mapped_column(Text)
     valor: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
     conceito: Mapped[str | None] = mapped_column(Text)
@@ -354,7 +355,16 @@ class ResultadoAnalise(Base, TimestampMixin):
             "km",
             "tipo_analise",
             unique=True,
-            postgresql_where=text("deleted_at IS NULL"),
+            postgresql_where=text("deleted_at IS NULL AND amostra IS NULL"),
+        ),
+        Index(
+            "ux_resultado_viagem_km_tipo_amostra",
+            "viagem_id",
+            "km",
+            "tipo_analise",
+            "amostra",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL AND amostra IS NOT NULL"),
         ),
         Index(
             "ix_resultado_viagem_tipo_km",

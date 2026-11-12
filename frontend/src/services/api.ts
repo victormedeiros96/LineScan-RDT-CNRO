@@ -1,5 +1,14 @@
 import axios from 'axios'
-import type { IGGResult, ModeloInfo, AnaliseResponse, Deteccao } from '../types'
+import type {
+  IGGResult,
+  ModeloInfo,
+  AnaliseResponse,
+  Deteccao,
+  IcpImportResponse,
+  IcpPlacasResponse,
+  IcpResultado,
+  IcpInventario,
+} from '../types'
 
 const api = axios.create({
   baseURL: '/api',
@@ -246,4 +255,63 @@ export async function cancelarUpload(uploadId: string): Promise<void> {
 export async function listarUploads(): Promise<UploadItem[]> {
   const { data } = await api.get('/uploads/listar')
   return data.uploads ?? []
+}
+
+// ── ICP (pavimento rígido) ───────────────────────────────────────────────────
+
+export async function importarFichaIcp(
+  viagemNome: string,
+  arquivo: File,
+): Promise<IcpImportResponse> {
+  const form = new FormData()
+  form.append('file', arquivo)
+  const { data } = await api.post(
+    `/relatorios/icp/${encodeURIComponent(viagemNome)}`,
+    form,
+  )
+  return data
+}
+
+export async function listarIcp(viagemNome: string): Promise<IcpResultado[]> {
+  const { data } = await api.get(`/relatorios/icp/${encodeURIComponent(viagemNome)}`)
+  return data
+}
+
+export async function obterPlacasIcp(
+  viagemNome: string,
+): Promise<IcpInventario> {
+  const { data } = await api.get(
+    `/relatorios/icp/${encodeURIComponent(viagemNome)}/placas`,
+  )
+  return data
+}
+
+export interface GerarPlacasIcpPayload {
+  periodo_m?: number
+  fase_m?: number
+  juntas_km?: number[]
+  largura_placa_m?: number
+  comprimento_max_m?: number
+  tamanho_amostra?: number
+  gerar_rois?: boolean
+}
+
+export async function gerarPlacasIcp(
+  viagemNome: string,
+  payload: GerarPlacasIcpPayload,
+): Promise<IcpPlacasResponse> {
+  const { data } = await api.post(
+    `/relatorios/icp/${encodeURIComponent(viagemNome)}/placas`,
+    payload,
+  )
+  return data
+}
+
+export function getIcpExportUrl(viagemNome: string): string {
+  return `/api/relatorios/icp/${encodeURIComponent(viagemNome)}/exportar`
+}
+
+export async function listarFaixas(viagemNome: string): Promise<FaixaInfo[]> {
+  const { data } = await api.get(`/pastas/faixas/${encodeURIComponent(viagemNome)}`)
+  return data.faixas ?? []
 }
