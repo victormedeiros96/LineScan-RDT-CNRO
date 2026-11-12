@@ -50,7 +50,6 @@ services:
       dockerfile: backend/Dockerfile.coolify
     volumes:
       - dados:/app/dados
-      - icp_modelos:/opt/trinca-detector
     environment:
       - MODELOS_DIR=/app/modelos
       - DADOS_DIR=/app/dados
@@ -87,7 +86,6 @@ services:
     command: rq worker --url redis://redis:6379/0 rdt01-processing
     volumes:
       - dados:/app/dados
-      - icp_modelos:/opt/trinca-detector
     environment:
       - MODELOS_DIR=/app/modelos
       - DADOS_DIR=/app/dados
@@ -122,4 +120,3 @@ services:
 volumes:
   postgres_data:
   dados:
-  icp_modelos:

@@ -12,9 +12,24 @@ SHA256="901b70ad6c8995c20b1a32a61ae11562d3eb54c85f71e94034582a1b5590c3e6"
 
 mkdir -p "$DESTINO/nuclio/modelos"
 
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+
 echo "Baixando código do trinca-detector..."
-curl -fsSL "$RELEASE/trinca-detector-main.zip" -o /tmp/trinca-detector-main.zip
-unzip -q -o /tmp/trinca-detector-main.zip -d "$DESTINO"
+curl -fsSL "$RELEASE/trinca-detector-main.zip" -o "$TMP/main.zip"
+
+# O ZIP do GitHub tem um diretório raiz (trinca-detector-main/); remove-o para
+# que o código fique em <destino>/nuclio (como o ProvedorTrincaDetector espera).
+if command -v unzip >/dev/null 2>&1; then
+  unzip -q "$TMP/main.zip" -d "$TMP/extract"
+  cp -a "$TMP/extract/trinca-detector-main/." "$DESTINO/"
+else
+  python3 - "$TMP/main.zip" "$TMP/extract" <<'PY'
+import sys, zipfile
+zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])
+PY
+  cp -a "$TMP/extract/trinca-detector-main/." "$DESTINO/"
+fi
 
 echo "Baixando modelo $MODELO..."
 curl -fsSL "$RELEASE/$MODELO" -o "$DESTINO/nuclio/modelos/$MODELO"

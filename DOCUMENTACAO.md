@@ -722,9 +722,18 @@ continua em `icp_placas.json` para consulta/transição.
 
 Os pesos/modelo vêm do release público
 `https://github.com/victormedeiros96/trinca-detector-public/releases/tag/0.1`
-(`trinca_junta_limpo_ts.pt`, sha256 `901b70ad…c3e6`). A distribuição recomendada
-é uma imagem Docker própria com o `nuclio` + pesos; o `trinca-detector` é GPL-3.0
-e permanece isolado, acessado por adaptador.
+(`trinca_junta_limpo_ts.pt`, sha256 `901b70ad…c3e6`).
+
+* **Coolify**: o `backend/Dockerfile.coolify` tem um estágio `modelo-icp` que
+  baixa e confere o código + pesos e os copia para `/opt/trinca-detector` na
+  própria imagem do backend/worker. Não há volume a popular — basta rebuild.
+  As `ARG` `TRINCA_RELEASE`/`TRINCA_SHA256` permitem trocar a versão.
+* **Local/compose**: `scripts/baixar_modelo_trinca.sh` baixa para
+  `ICP_MODEL_DIR` (padrão `/opt/trinca-detector`) e o compose monta o diretório
+  em `/opt/trinca-detector`.
+
+O `trinca-detector` é GPL-3.0 e permanece isolado em `/opt/trinca-detector`,
+acessado por adaptador (`ProvedorTrincaDetector`).
 
 O fluxo do processamento segue com o job visível em **Processamentos**. Ao
 concluir, o botão **Abrir ICP** leva à tela de ficha/resultado. A calibração
