@@ -206,7 +206,61 @@ def test_resultado_icp_usando_campo_valor(session: Session) -> None:
     assert itens is not None
     assert itens[0]["tipo_analise"] == "icp"
     assert itens[0]["valor"] == 3.14
-    assert itens[0]["norma"] is None
+    assert itens[0]["icp"] == 3.14
+    assert itens[0]["amostra"] is None
+    assert itens[0]["norma"] == resultado_store.NORMA_ICP
+
+
+def test_persiste_icp_por_amostra_no_mesmo_km(session: Session) -> None:
+    _viagem(session, "Viagem ICP Amostras")
+
+    gravados = resultado_store.persistir_resultados_em_sessao(
+        session,
+        viagem_nome="Viagem ICP Amostras",
+        tipo_analise="icp",
+        resultados=[
+            {"km": 33, "amostra": "ICP_1", "icp": 84.11, "conceito": "Muito Bom"},
+            {"km": 33, "amostra": "ICP_2", "icp": 71.99, "conceito": "Muito Bom"},
+            {"km": 33, "amostra": "ICP_1", "icp": 80.0, "conceito": "Muito Bom"},
+        ],
+    )
+    assert gravados == 3
+
+    itens = resultado_store.carregar_resultados(
+        "Viagem ICP Amostras", "icp", session=session
+    )
+    assert itens is not None
+    assert [(item["km"], item["amostra"], item["icp"]) for item in itens] == [
+        (33, "ICP_1", 80.0),
+        (33, "ICP_2", 71.99),
+    ]
+    assert itens[0]["norma"] == resultado_store.NORMA_ICP
+
+
+def test_icp_sem_km_usa_sentinela_zero(session: Session) -> None:
+    _viagem(session, "Viagem ICP PPV")
+
+    resultado_store.persistir_resultados_em_sessao(
+        session,
+        viagem_nome="Viagem ICP PPV",
+        tipo_analise="icp",
+        resultados=[
+            {
+                "amostra": "ICP_1",
+                "km": None,
+                "km_informado": False,
+                "icp": 84.11,
+                "conceito": "Muito Bom",
+            }
+        ],
+    )
+
+    itens = resultado_store.carregar_resultados(
+        "Viagem ICP PPV", "icp", session=session
+    )
+    assert itens is not None
+    assert itens[0]["km"] == 0
+    assert itens[0]["km_informado"] is False
 
 
 def test_tipo_de_analise_invalido(session: Session) -> None:
