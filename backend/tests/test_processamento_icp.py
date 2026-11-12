@@ -14,6 +14,7 @@ from src.services import image_processor as ip
 
 def _settings(base: Path) -> SimpleNamespace:
     return SimpleNamespace(
+        dados_dir=base / "dados",
         modelos_dir=base / "modelos",
         icp_nuclio_dir=base / "nao-existe",
         icp_modelo_pt=base / "nao-existe.pt",
@@ -72,6 +73,9 @@ def test_processar_placas_icp_com_calibracao_manual(tmp_path: Path) -> None:
     assert resultado["total_placas"] == 23
     assert resultado["total_amostras"] == 2
     assert resultado["calibracao"]["fonte"] == "manual"
+    # Resumo estruturado também vai para o resultado do job (persistido no banco).
+    assert resultado["inventario_resumo"]["total_amostras"] == 2
+    assert resultado["inventario_resumo"]["trecho"]["n_faixas"] == 24
     assert (base / "icp_placas.json").is_file()
     assert (base / "icp_juntas.json").is_file()
 
@@ -86,6 +90,42 @@ def test_processar_placas_icp_sem_faixas_falha(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="Nenhuma faixa"):
         _processar_placas_icp(base, _settings(tmp_path), {"periodo_m": 5.12})
+
+
+def test_job_icp_conclui_com_aviso_sem_calibracao(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Sem modelo/detecção o job conclui com aviso (não falha nem omite o fato)."""
+    import src.jobs as jobs
+
+    persistidas: list[str] = []
+    monkeypatch.setattr(jobs, "get_settings", lambda: _settings(tmp_path))
+    monkeypatch.setattr(jobs, "processar_pasta", lambda *a, **kw: [])
+    monkeypatch.setattr(
+        jobs.viagem_store,
+        "persistir_viagem",
+        lambda **kw: persistidas.append(kw["viagem_nome"]),
+    )
+    monkeypatch.setattr(
+        jobs,
+        "_processar_placas_icp",
+        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("Modelo de juntas indisponível")),
+    )
+
+    origem = tmp_path / "origem"
+    origem.mkdir()
+    resultado = _processar_imagens(
+        pasta_origem=str(origem),
+        viagem_nome="viagem_icp",
+        km_inicial=0.0,
+        tipo_analise="icp",
+    )
+
+    assert resultado["placas_geradas"] is False
+    assert resultado["avisos"] == [
+        "Placas do ICP não geradas: Modelo de juntas indisponível"
+    ]
+    assert persistidas == ["viagem_icp"]  # config/blocos/faixas gravados antes
 
 
 def test_job_icp_exige_km_inicial() -> None:

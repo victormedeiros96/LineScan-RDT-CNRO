@@ -140,6 +140,8 @@ export interface JobInfo {
     total_placas?: number
     total_amostras?: number
     total_rois?: number
+    placas_geradas?: boolean
+    avisos?: string[]
   }
   error?: string
   criado_em?: string
