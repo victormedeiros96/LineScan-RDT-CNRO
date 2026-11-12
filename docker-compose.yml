@@ -34,9 +34,12 @@ services:
       - ./modelos:/app/modelos:ro
       - ./dados:/app/dados
       - ./sources.json:/app/config/sources.json:ro
+      - ${ICP_MODEL_DIR:-/opt/trinca-detector}:/opt/trinca-detector:ro
     environment:
       - MODELOS_DIR=/app/modelos
       - DADOS_DIR=/app/dados
+      - ICP_NUCLIO_DIR=/opt/trinca-detector/nuclio
+      - ICP_MODELO_PT=/opt/trinca-detector/nuclio/modelos/trinca_junta_limpo_ts.pt
       - SOURCES_CONFIG=/app/config/sources.json
       - REDIS_URL=redis://redis:6379/0
       - DATABASE_URL=postgresql://${POSTGRES_USER:-rdt01}:${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}@postgres:5432/${POSTGRES_DB:-rdt01}
@@ -67,9 +70,12 @@ services:
       - ./modelos:/app/modelos:ro
       - ./dados:/app/dados
       - ./sources.json:/app/config/sources.json:ro
+      - ${ICP_MODEL_DIR:-/opt/trinca-detector}:/opt/trinca-detector:ro
     environment:
       - MODELOS_DIR=/app/modelos
       - DADOS_DIR=/app/dados
+      - ICP_NUCLIO_DIR=/opt/trinca-detector/nuclio
+      - ICP_MODELO_PT=/opt/trinca-detector/nuclio/modelos/trinca_junta_limpo_ts.pt
       - SOURCES_CONFIG=/app/config/sources.json
       - REDIS_URL=redis://redis:6379/0
       - DATABASE_URL=postgresql://${POSTGRES_USER:-rdt01}:${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}@postgres:5432/${POSTGRES_DB:-rdt01}

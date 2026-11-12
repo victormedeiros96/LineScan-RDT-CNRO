@@ -45,6 +45,27 @@ def _normalizar_viagem(nome: str) -> str:
     return nome.strip() if nome else ""
 
 
+def _normalizar_juntas(juntas: dict) -> dict:
+    """Valida a calibração de juntas opcional do processamento ICP.
+
+    Aceita ``juntas_km`` (lista de KM absolutos), ``periodo_m`` e ``fase_m``.
+    Qualquer outra chave é ignorada; valores inválidos viram 400.
+    """
+    saida: dict = {}
+    if juntas.get("juntas_km") is not None:
+        valores = juntas["juntas_km"]
+        if not isinstance(valores, list):
+            raise TypeError("'juntas_km' deve ser uma lista")
+        saida["juntas_km"] = [float(v) for v in valores]
+    if juntas.get("periodo_m") is not None:
+        saida["periodo_m"] = float(juntas["periodo_m"])
+        if saida["periodo_m"] <= 0:
+            raise ValueError("'periodo_m' deve ser positivo")
+    if juntas.get("fase_m") is not None:
+        saida["fase_m"] = float(juntas["fase_m"])
+    return saida
+
+
 def _resolver_viagem(settings: Settings, nome: str) -> Path | None:
     """Resolve a pasta da viagem tolerando espaços nas bordas do nome.
 
@@ -124,11 +145,27 @@ async def processar_imagens(
     tipo_pista = body.get("tipo_pista", "simples")
     sentido = body.get("sentido", "crescente")
     faixa = body.get("faixa")
+    tipo_analise = str(body.get("tipo_analise") or "igg").lower()
 
     try:
         tipo_pista = normalizar_tipo_pista(tipo_pista)
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+    if tipo_analise not in ("igg", "icp"):
+        raise HTTPException(400, "Campo 'tipo_analise' deve ser 'igg' ou 'icp'")
+
+    juntas = body.get("juntas")
+    if juntas is not None:
+        if not isinstance(juntas, dict):
+            raise HTTPException(400, "Campo 'juntas' deve ser um objeto")
+        try:
+            juntas = _normalizar_juntas(juntas)
+        except (TypeError, ValueError) as e:
+            raise HTTPException(400, f"Calibração de juntas inválida: {e}")
+
+    if tipo_analise == "icp" and km_inicial is None:
+        raise HTTPException(400, "O processamento ICP exige 'km_inicial'")
 
     if not viagem_nome:
         raise HTTPException(400, "Campo 'viagem_nome' é obrigatório")
@@ -149,7 +186,10 @@ async def processar_imagens(
         "tipo_pista": tipo_pista,
         "sentido": sentido,
         "faixa": faixa,
+        "tipo_analise": tipo_analise,
     }
+    if juntas:
+        meta["juntas"] = juntas
     job = queue.enqueue(
         "src.jobs.processar_imagens_job",
         pasta_origem=str(origem),
@@ -159,7 +199,9 @@ async def processar_imagens(
         tipo_pista=tipo_pista,
         sentido=sentido,
         faixa=faixa,
-        job_timeout=3600,
+        tipo_analise=tipo_analise,
+        juntas=juntas,
+        job_timeout=7200 if tipo_analise == "icp" else 3600,
         result_ttl=-1,
         failure_ttl=-1,
         meta=meta,

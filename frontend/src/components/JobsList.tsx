@@ -150,8 +150,24 @@ export function JobsList() {
                 {selected.meta?.viagem} —{" "}
                 {selected.meta?.tipo === 'upload_zip'
                   ? `${(selected.resultado as { total_imagens?: number }).total_imagens ?? 0} imagens extraídas`
-                  : `${(selected.resultado.lotes ?? []).length} lotes`}
+                  : selected.meta?.tipo_analise === 'icp'
+                    ? `${selected.resultado.total_placas ?? 0} placas em ${selected.resultado.total_amostras ?? 0} amostras`
+                    : `${(selected.resultado.lotes ?? []).length} lotes`}
               </p>
+              {selected.meta?.tipo === 'upload_zip' ? null : selected.meta?.tipo_analise === 'icp' ? (
+                <button
+                  className="btn btn-primary"
+                  style={{ marginBottom: '1rem' }}
+                  onClick={() => {
+                    if (selected.meta?.viagem) {
+                      setViagemAnaliseNome(selected.meta.viagem)
+                    }
+                    setCurrentView('icp')
+                  }}
+                >
+                  Abrir ICP
+                </button>
+              ) : null}
               {selected.meta?.tipo === 'upload_zip' ? (
                 <div className="job-detail-status">
                   <p className="job-detail-path">
@@ -170,26 +186,28 @@ export function JobsList() {
                 </div>
               ) : (
                 <>
-                  <button
-                    className="btn btn-primary"
-                    style={{ marginBottom: '1rem' }}
-                    onClick={async () => {
-                      try {
-                        const meta = selected.meta!
-                        await executarInferencia(
-                          meta.viagem,
-                          'igg',
-                          meta.tipo_pista ?? 'simples',
-                          meta.sentido ?? 'crescente',
-                          meta.faixa ?? null,
-                        )
-                      } catch {
-                        // ignore
-                      }
-                    }}
-                  >
-                    Executar Inferência
-                  </button>
+                  {selected.meta?.tipo_analise !== 'icp' && (
+                    <button
+                      className="btn btn-primary"
+                      style={{ marginBottom: '1rem' }}
+                      onClick={async () => {
+                        try {
+                          const meta = selected.meta!
+                          await executarInferencia(
+                            meta.viagem,
+                            'igg',
+                            meta.tipo_pista ?? 'simples',
+                            meta.sentido ?? 'crescente',
+                            meta.faixa ?? null,
+                          )
+                        } catch {
+                          // ignore
+                        }
+                      }}
+                    >
+                      Executar Inferência
+                    </button>
+                  )}
                   <div className="lotes-grid">
                     {(selected.resultado.lotes ?? []).map(
                       (lote: { indice: number; total_faixas: number; faixas: { arquivo: string; faixa_index: number; km_inicio: number | null; km_fim: number | null }[]; imagens_no_lote: number }) => (

@@ -8,11 +8,13 @@ from rq import get_current_job
 from sqlalchemy.exc import SQLAlchemyError
 
 from src.core.config import get_settings
-from src.services import job_store, viagem_store
+from src.services import icp_juntas, icp_placas, job_store, viagem_store
 from src.services.image_processor import processar_pasta, LARGURA_PX
 from src.services.inference_pipeline import InferencePipeline
 from src.services.model_loader import listar_modelos
 from src.utils.tipo_pista import normalizar_tipo_pista
+
+TIPOS_ANALISE = ("igg", "icp")
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +61,8 @@ def processar_imagens_job(
     tipo_pista: str = "simples",
     sentido: str = "crescente",
     faixa: int | None = None,
+    tipo_analise: str = "igg",
+    juntas: dict | None = None,
 ) -> dict:
     return _executar_job(
         _processar_imagens,
@@ -69,6 +73,8 @@ def processar_imagens_job(
         tipo_pista=tipo_pista,
         sentido=sentido,
         faixa=faixa,
+        tipo_analise=tipo_analise,
+        juntas=juntas,
     )
 
 
@@ -80,6 +86,8 @@ def _processar_imagens(
     tipo_pista: str = "simples",
     sentido: str = "crescente",
     faixa: int | None = None,
+    tipo_analise: str = "igg",
+    juntas: dict | None = None,
 ) -> dict:
     import json as _json
     settings = get_settings()
@@ -88,6 +96,15 @@ def _processar_imagens(
     destino = settings.dados_dir / viagem_nome
     tipo_pista = normalizar_tipo_pista(tipo_pista)
 
+    if tipo_analise not in TIPOS_ANALISE:
+        raise ValueError(
+            f"tipo_analise inválido: {tipo_analise!r} (use {' ou '.join(TIPOS_ANALISE)})"
+        )
+    if tipo_analise == "icp" and km_inicial is None:
+        raise ValueError(
+            "O modo ICP exige 'km_inicial' para posicionar as placas no trecho."
+        )
+
     config = {
         "nome": viagem_nome,
         "km_inicial": km_inicial,
@@ -95,7 +112,10 @@ def _processar_imagens(
         "tipo_pista": tipo_pista,
         "sentido": sentido,
         "faixa": faixa,
+        "tipo_analise": tipo_analise,
     }
+    if juntas:
+        config["juntas"] = juntas
     destino.mkdir(parents=True, exist_ok=True)
     (destino / "viagem_config.json").write_text(_json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -112,7 +132,17 @@ def _processar_imagens(
         tipo_pista=tipo_pista,
         faixa=faixa,
         max_batches=max_batches,
+        todas_faixas=(tipo_analise == "icp"),
     )
+
+    resultado: dict = {
+        "total_lotes": len(lotes),
+        "lotes": lotes,
+        "destino": str(destino),
+        "tipo_analise": tipo_analise,
+    }
+    if tipo_analise == "icp":
+        resultado.update(_processar_placas_icp(destino, settings, juntas))
 
     # Grava config/blocos/faixas no banco em uma única transação. Durante a
     # transição, uma falha aqui não invalida a concatenação: os JSONs legados
@@ -131,10 +161,49 @@ def _processar_imagens(
             exc,
         )
 
+    return resultado
+
+
+def _processar_placas_icp(
+    destino: Path,
+    settings,
+    juntas: dict | None = None,
+) -> dict:
+    """Calibra as juntas e materializa placas/amostras/ROIs do trecho (ICP)."""
+    faixas = icp_placas.listar_faixas(destino)
+    if not faixas:
+        raise ValueError(
+            "Nenhuma faixa com KM foi gerada; confira 'km_inicial' e as imagens."
+        )
+
+    detector = icp_juntas.carregar_config(
+        settings.modelos_dir,
+        nuclio_dir=settings.icp_nuclio_dir,
+        modelo_pt=settings.icp_modelo_pt,
+        limiar=settings.icp_limiar_juntas,
+        ordem_invertida=settings.icp_ordem_invertida,
+        mm_por_px_y=settings.icp_mm_por_px_y,
+    )
+    calibracao = icp_juntas.calibrar_viagem(
+        destino, faixas, config=juntas, detector=detector
+    )
+    inventario = icp_placas.montar_inventario(
+        faixas,
+        periodo_m=float(calibracao["periodo_m"]),
+        fase_m=float(calibracao.get("fase_m") or 0.0),
+        calibracao=calibracao,
+    )
+    total_rois = icp_placas.salvar_rois(destino, faixas, inventario["placas"])
+    icp_placas.salvar_inventario(destino, inventario)
+    icp_juntas.salvar_calibracao(destino, calibracao)
+
     return {
-        "total_lotes": len(lotes),
-        "lotes": lotes,
-        "destino": str(destino),
+        "total_faixas": len(faixas),
+        "total_placas": len(inventario["placas"]),
+        "total_amostras": len(inventario["amostras"]),
+        "total_rois": total_rois,
+        "placas_descartadas": len(inventario.get("descartadas") or []),
+        "calibracao": calibracao,
     }
 
 

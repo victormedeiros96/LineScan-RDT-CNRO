@@ -5,6 +5,7 @@ import { processarPasta } from '../services/api'
 export function Processing() {
   const viagem = useAppStore((s) => s.viagem)
   const folderPath = useAppStore((s) => s.folderPath)
+  const analysisType = useAppStore((s) => s.analysisType)
   const reset = useAppStore((s) => s.reset)
   const setCurrentView = useAppStore((s) => s.setCurrentView)
 
@@ -19,7 +20,16 @@ export function Processing() {
 
     done.current = true
 
-    processarPasta(fp, v.nome, v.km_inicial, v.km_final, v.tipo_faixa, v.sentido, v.faixa)
+    processarPasta(
+      fp,
+      v.nome,
+      v.km_inicial,
+      v.km_final,
+      v.tipo_faixa,
+      v.sentido,
+      v.faixa,
+      analysisType ?? 'igg',
+    )
       .then(() => {
         reset()
         setCurrentView('jobs')
