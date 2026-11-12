@@ -154,6 +154,14 @@ export function JobsList() {
                     ? `${selected.resultado.total_placas ?? 0} placas em ${selected.resultado.total_amostras ?? 0} amostras`
                     : `${(selected.resultado.lotes ?? []).length} lotes`}
               </p>
+              {selected.resultado.avisos && selected.resultado.avisos.length > 0 && (
+                <div className="job-detail-status error" style={{ marginBottom: '1rem' }}>
+                  <h4>⚠️ Concluído com avisos</h4>
+                  {selected.resultado.avisos.map((aviso) => (
+                    <p key={aviso} className="job-detail-error">{aviso}</p>
+                  ))}
+                </div>
+              )}
               {selected.meta?.tipo === 'upload_zip' ? null : selected.meta?.tipo_analise === 'icp' ? (
                 <button
                   className="btn btn-primary"

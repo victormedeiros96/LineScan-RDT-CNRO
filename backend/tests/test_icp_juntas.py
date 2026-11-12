@@ -39,7 +39,8 @@ def test_calibrar_manual_por_juntas_km() -> None:
 
     assert cal["fonte"] == "juntas_km"
     assert abs(cal["periodo_m"] - 5.12) < 0.01
-    assert abs(cal["fase_m"]) < 0.02
+    # Fase = distância da primeira junta (1,2 m) até km0.
+    assert abs(cal["fase_m"] - 1.2) < 0.02
 
 
 def test_calibrar_manual_por_periodo_e_fase() -> None:
