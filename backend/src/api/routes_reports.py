@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFil
 from src.api.routes_folders import _resolver_viagem
 from src.core.config import Settings
 from src.core.dependencies import get_settings_dep
-from src.services import icp_placas, resultado_store
+from src.services import icp_juntas, icp_placas, resultado_store
 from src.services.icp_import import NORMA_ICP, importar_icp
 from src.services.igg_calculator import (
     calcular_igg_por_km,
@@ -238,8 +238,16 @@ async def gerar_placas_icp(
 ):
     """Gera o inventário de placas do rígido e as amostras de ICP.
 
-    Aceita ``periodo_m`` + ``fase_m`` de uma calibração já conhecida ou
-    ``juntas_km`` para calibrar pela rede periódica do ``juntas-detector``.
+    Origens aceitas, em ordem de preferência:
+
+    * ``detectar: true`` — roda o modelo (juntas-detector + trinca-detector) e
+      monta cada placa entre duas juntas realmente segmentadas na imagem;
+    * ``juntas`` — lista de geometrias de junta já detectadas (``km``,
+      ``angulo_graus``, ``x0``, ``x1``);
+    * ``periodo_m`` + ``fase_m`` ou ``juntas_km`` — rede periódica (fallback).
+
+    Nos dois primeiros casos o tamanho da placa vem da imagem e pode variar na
+    viagem; não é preciso declarar um tamanho fixo.
     """
     base = _resolver_viagem(settings, viagem_nome)
     if base is None:
@@ -253,10 +261,44 @@ async def gerar_placas_icp(
         )
 
     calibracao: dict | None = None
+    juntas_geometria = list(body.get("juntas") or [])
     mm_x = float(body.get("mm_por_px_x", icp_placas.MM_POR_PX))
     mm_y = float(body.get("mm_por_px_y", icp_placas.MM_POR_PX))
+    periodo_m: float | None = None
+    fase_m = 0.0
     try:
-        if body.get("juntas_km"):
+        if body.get("detectar"):
+            detector = icp_juntas.carregar_config(
+                settings.modelos_dir,
+                nuclio_dir=settings.icp_nuclio_dir,
+                modelo_pt=settings.icp_modelo_pt,
+                limiar=settings.icp_limiar_juntas,
+                ordem_invertida=settings.icp_ordem_invertida,
+                mm_por_px_y=settings.icp_mm_por_px_y,
+            )
+            juntas_geometria = icp_juntas.detectar_juntas_geometria(
+                base, faixas, detector
+            )
+            if not juntas_geometria:
+                raise ValueError(
+                    "A detecção não encontrou juntas na imagem; confira o modelo e a escala."
+                )
+            calibracao = {
+                "fonte": "detector",
+                "n_juntas": len(juntas_geometria),
+                "mm_por_px_x": mm_x,
+                "mm_por_px_y": mm_y,
+                "norma": icp_placas.NORMA_ICP,
+            }
+        elif juntas_geometria:
+            calibracao = {
+                "fonte": "juntas_detectadas",
+                "n_juntas": len(juntas_geometria),
+                "mm_por_px_x": mm_x,
+                "mm_por_px_y": mm_y,
+                "norma": icp_placas.NORMA_ICP,
+            }
+        elif body.get("juntas_km"):
             calibracao = icp_placas.calibrar_por_juntas(
                 body["juntas_km"],
                 km0=min(faixa.km_inicio for faixa in faixas),
@@ -267,7 +309,8 @@ async def gerar_placas_icp(
         else:
             if body.get("periodo_m") is None:
                 raise ValueError(
-                    "Informe 'periodo_m' (calibração) ou 'juntas_km' (juntas para calibrar)."
+                    "Informe 'juntas', 'detectar', 'periodo_m' (calibração) "
+                    "ou 'juntas_km' (juntas para calibrar)."
                 )
             periodo_m = float(body["periodo_m"])
             fase_m = float(body.get("fase_m", 0.0))
@@ -281,6 +324,7 @@ async def gerar_placas_icp(
 
         inventario = icp_placas.montar_inventario(
             faixas,
+            juntas=juntas_geometria or None,
             periodo_m=periodo_m,
             fase_m=fase_m,
             largura_placa_m=float(body.get("largura_placa_m", icp_placas.LARGURA_PLACA_M)),
@@ -293,7 +337,7 @@ async def gerar_placas_icp(
             mm_por_px_y=mm_y,
             calibracao=calibracao,
         )
-    except ValueError as exc:
+    except (ValueError, RuntimeError) as exc:
         raise HTTPException(400, str(exc)) from exc
 
     if body.get("gerar_rois", True):

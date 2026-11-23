@@ -304,6 +304,139 @@ def gerar_placas(
     return placas, descartadas
 
 
+def gerar_placas_por_juntas(
+    faixas: list[FaixaInfo],
+    juntas: Iterable[dict[str, Any]],
+    *,
+    comprimento_max_m: float = COMPRIMENTO_MAX_M,
+    mm_por_px_x: float = MM_POR_PX,
+    mm_por_px_y: float = MM_POR_PX,
+    largura_px: int = LARGURA_FAIXA_PX,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Gera as placas a partir das juntas transversais **detectadas na imagem**.
+
+    Diferente de :func:`gerar_placas` — que materializa uma rede periódica a
+    partir de ``periodo_m``/``largura_placa_m`` — aqui cada placa é o intervalo
+    entre duas juntas consecutivas realmente segmentadas pelo modelo
+    (``juntas-detector`` + ``trinca-detector``). O comprimento de cada placa é a
+    distância medida entre juntas vizinhas, então ele pode variar dentro da mesma
+    viagem sem que se declare um tamanho fixo.
+
+    Cada item de ``juntas`` descreve uma junta na imagem: ``km`` (posição no eixo
+    da via no centro da faixa), ``angulo_graus`` (inclinação da transversal) e,
+    opcionalmente, ``x0``/``x1`` (extensão em px; padrão: largura inteira da
+    faixa, que é a geometria real da imagem).
+
+    Devolve ``(placas, descartadas)`` no mesmo formato de :func:`gerar_placas`.
+    """
+    if not faixas:
+        raise ValueError("Nenhuma faixa disponível para gerar as placas.")
+
+    faixas_ordenadas = sorted(faixas, key=lambda f: (f.km_inicio, f.faixa_index))
+    km0 = _km0(faixas_ordenadas)
+    x_ref = float(largura_px) / 2.0
+    largura_max_px = float(largura_px - 1)
+
+    def _y_no_strip(km: float) -> float:
+        return (float(km) - km0) * 1_000_000.0 / mm_por_px_y
+
+    def _y_da_junta(junta: dict[str, Any], x: float) -> float:
+        y_centro = _y_no_strip(junta["km"])
+        angulo = float(junta.get("angulo_graus") or 0.0)
+        return y_centro + (x - x_ref) * math.tan(math.radians(angulo))
+
+    def _x_limites(junta: dict[str, Any]) -> tuple[float, float]:
+        x0 = float(junta.get("x0", 0.0))
+        x1 = float(junta.get("x1", largura_max_px))
+        return max(0.0, min(x0, x1)), min(largura_max_px, max(x0, x1))
+
+    ordenadas = sorted(juntas, key=lambda j: float(j["km"]))
+    placas: list[dict[str, Any]] = []
+    descartadas: list[dict[str, Any]] = []
+
+    for ja, jb in zip(ordenadas, ordenadas[1:]):
+        km_ini = min(float(ja["km"]), float(jb["km"]))
+        km_fim = max(float(ja["km"]), float(jb["km"]))
+        base = {"km_inicio": round(km_ini, 3), "km_fim": round(km_fim, 3)}
+
+        if not _intervalo_coberto(faixas_ordenadas, km_ini, km_fim):
+            descartadas.append({**base, "motivo": "sem cobertura de faixa"})
+            continue
+
+        xa0, xa1 = _x_limites(ja)
+        xb0, xb1 = _x_limites(jb)
+        x_esq = max(xa0, xb0)
+        x_dir = min(xa1, xb1)
+        if x_dir - x_esq <= 0:
+            descartadas.append({**base, "motivo": "juntas sem sobreposição lateral"})
+            continue
+
+        angulo_a = float(ja.get("angulo_graus") or 0.0)
+        angulo_b = float(jb.get("angulo_graus") or 0.0)
+        comprimento = jd_placas.distancia_transversais(
+            _y_no_strip(km_ini), angulo_a, _y_no_strip(km_fim), angulo_b,
+            mm_x=mm_por_px_x, mm_y=mm_por_px_y,
+        )
+        comprimento = round(float(comprimento), 3)
+        if comprimento <= 0 or comprimento > comprimento_max_m:
+            descartadas.append(
+                {**base, "comprimento_m": comprimento, "motivo": "comprimento fora do limite"}
+            )
+            continue
+
+        poligono_px = [
+            [round(x_esq, 2), round(_y_da_junta(ja, x_esq), 2)],
+            [round(x_dir, 2), round(_y_da_junta(ja, x_dir), 2)],
+            [round(x_dir, 2), round(_y_da_junta(jb, x_dir), 2)],
+            [round(x_esq, 2), round(_y_da_junta(jb, x_esq), 2)],
+        ]
+
+        faixas_da_placa = _faixas_do_intervalo(faixas_ordenadas, km_ini, km_fim)
+        faixa_principal = _faixa_em_km(faixas_ordenadas, km_ini) or faixas_da_placa[0]
+
+        pontos_faixa = []
+        poligono_m = []
+        for x_px, y_px in poligono_px:
+            km = km0 + float(y_px) * mm_por_px_y / 1_000_000.0
+            faixa = _faixa_em_km(faixas_ordenadas, km) or faixa_principal
+            pontos_faixa.append(
+                {
+                    "arquivo": faixa.arquivo,
+                    "faixa_index": faixa.faixa_index,
+                    "x": round(float(x_px), 2),
+                    "y": round(float(_y_na_faixa(faixa, km)), 2),
+                }
+            )
+            poligono_m.append(
+                {
+                    "x_m": round(float(x_px) * mm_por_px_x / 1000.0, 3),
+                    "km": round(float(km), 3),
+                }
+            )
+
+        placas.append(
+            {
+                "id": f"P{len(placas) + 1:04d}",
+                "km": round((km_ini + km_fim) / 2.0, 3),
+                "km_inicio": round(km_ini, 3),
+                "km_fim": round(km_fim, 3),
+                "comprimento_m": comprimento,
+                "largura_m": round((x_dir - x_esq) * mm_por_px_x / 1000.0, 3),
+                "bloco_indice": faixa_principal.bloco_indice,
+                "faixa": faixa_principal.arquivo,
+                "faixa_index": faixa_principal.faixa_index,
+                "faixas": [f.arquivo for f in faixas_da_placa],
+                "poligono": poligono_px,
+                "poligono_m": poligono_m,
+                "pontos_faixa": pontos_faixa,
+                "amostra_id": None,
+                "roi": None,
+            }
+        )
+
+    return placas, descartadas
+
+
 def agrupar_amostras(
     placas: list[dict[str, Any]], *, tamanho: int = TAMANHO_AMOSTRA
 ) -> list[dict[str, Any]]:
@@ -338,7 +471,7 @@ def agrupar_amostras(
 def montar_inventario(
     faixas: list[FaixaInfo],
     *,
-    periodo_m: float,
+    periodo_m: float | None = None,
     fase_m: float = 0.0,
     largura_placa_m: float = LARGURA_PLACA_M,
     comprimento_max_m: float = COMPRIMENTO_MAX_M,
@@ -347,31 +480,63 @@ def montar_inventario(
     mm_por_px_x: float = MM_POR_PX,
     mm_por_px_y: float = MM_POR_PX,
     calibracao: dict[str, Any] | None = None,
+    juntas: Iterable[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Gera placas + amostras e devolve o inventário pronto para persistir."""
-    placas, descartadas = gerar_placas(
-        faixas,
-        periodo_m=periodo_m,
-        fase_m=fase_m,
-        largura_placa_m=largura_placa_m,
-        comprimento_max_m=comprimento_max_m,
-        angulo_graus=angulo_graus,
-        mm_por_px_x=mm_por_px_x,
-        mm_por_px_y=mm_por_px_y,
-    )
-    amostras = agrupar_amostras(placas, tamanho=tamanho_amostra)
-    return {
-        "norma": NORMA_ICP,
-        "gerado_em": datetime.now(timezone.utc).isoformat(),
-        "calibracao": calibracao
-        or {
+    """Gera placas + amostras e devolve o inventário pronto para persistir.
+
+    Duas origens de geometria:
+
+    * ``juntas`` — as juntas transversais **detectadas na imagem**; cada placa é
+      o intervalo entre duas juntas consecutivas, com o tamanho medido na
+      segmentação (pode variar dentro da viagem). É o caminho preferido.
+    * ``periodo_m``/``fase_m`` — rede periódica (calibração manual ou por
+      ``juntas_km``), mantida como fallback.
+    """
+    juntas_detectadas = list(juntas or [])
+    if juntas_detectadas:
+        placas, descartadas = gerar_placas_por_juntas(
+            faixas,
+            juntas_detectadas,
+            comprimento_max_m=comprimento_max_m,
+            mm_por_px_x=mm_por_px_x,
+            mm_por_px_y=mm_por_px_y,
+        )
+        calibracao = calibracao or {
+            "fonte": "juntas_detectadas",
+            "n_juntas": len(juntas_detectadas),
+            "mm_por_px_x": mm_por_px_x,
+            "mm_por_px_y": mm_por_px_y,
+            "norma": NORMA_ICP,
+        }
+    else:
+        if periodo_m is None or periodo_m <= 0:
+            raise ValueError(
+                "Informe 'juntas' (detectadas na imagem) ou 'periodo_m' (rede periódica)."
+            )
+        placas, descartadas = gerar_placas(
+            faixas,
+            periodo_m=periodo_m,
+            fase_m=fase_m,
+            largura_placa_m=largura_placa_m,
+            comprimento_max_m=comprimento_max_m,
+            angulo_graus=angulo_graus,
+            mm_por_px_x=mm_por_px_x,
+            mm_por_px_y=mm_por_px_y,
+        )
+        calibracao = calibracao or {
             "periodo_m": round(periodo_m, 6),
             "fase_m": round(fase_m, 6),
             "largura_placa_m": largura_placa_m,
             "mm_por_px_x": mm_por_px_x,
             "mm_por_px_y": mm_por_px_y,
             "norma": NORMA_ICP,
-        },
+        }
+
+    amostras = agrupar_amostras(placas, tamanho=tamanho_amostra)
+    return {
+        "norma": NORMA_ICP,
+        "gerado_em": datetime.now(timezone.utc).isoformat(),
+        "calibracao": calibracao,
         "trecho": {
             "km_inicio": round(min(f.km_inicio for f in faixas), 3),
             "km_fim": round(max(f.km_fim for f in faixas), 3),
