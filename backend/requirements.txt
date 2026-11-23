@@ -15,8 +15,14 @@ scikit-image>=0.24.0
 redis>=5.2.0
 rq>=2.0.0
 onnxruntime-gpu>=1.20.0
-torch>=2.4.0
-torchvision>=0.19.0
+# torch/torchvision fixados no CUDA 12.6: a base é nvidia/cuda:12.6.3 e o driver
+# do host (550.163.01) reporta CUDA 12.6. O antigo `torch>=2.4.0` sem teto passou
+# a resolver para wheels CUDA 13, que o driver não suporta — torch.cuda.is_available()
+# ficava false e a inferência do ICP (trinca-detector/Ultralytics) caía em CPU.
+# Ver RDT1-30.
+--extra-index-url https://download.pytorch.org/whl/cu126
+torch==2.14.1+cu126
+torchvision==0.29.1+cu126
 tqdm==4.67.1
 ultralytics==8.3.163
 

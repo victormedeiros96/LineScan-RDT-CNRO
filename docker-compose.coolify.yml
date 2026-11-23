@@ -1,7 +1,8 @@
 # Variante de deploy no Coolify (servidor com GPU NVIDIA).
 #
 # Diferenças em relação ao docker-compose.yml local:
-# - usa `runtime: nvidia` (padrão das outras stacks do servidor) no backend e no worker;
+# - usa `runtime: nvidia` e reserva explícita de GPU (`deploy.resources.reservations.devices`)
+#   no backend e no worker — a inferência do ICP (trinca-detector) exige CUDA;
 # - não publica as portas internas (backend/redis/postgres ficam só na rede do compose);
 # - publica apenas o frontend em 8090, que é o alvo do túnel Cloudflare (0650163.xyz);
 # - `dados` vira volume nomeado (o diretório é gitignored e precisa persistir entre deploys);
@@ -76,6 +77,13 @@ services:
       timeout: 10s
       retries: 10
       start_period: 30s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     runtime: nvidia
     restart: unless-stopped
 
@@ -103,6 +111,13 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     runtime: nvidia
     restart: unless-stopped
 

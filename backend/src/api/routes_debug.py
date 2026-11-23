@@ -258,3 +258,55 @@ async def inferir_imagem_pt(file: UploadFile = File(...)):
         "detections": all_detections,
         "total": len(all_detections),
     })
+
+
+@router.get("/gpu")
+async def estado_gpu():
+    """Diagnóstico de GPU/CUDA da stack (RDT1-30).
+
+    O ICP exige GPU: aqui ficam visíveis o build de CUDA do torch, se o CUDA
+    está disponível no container e o que o ``nvidia-smi`` enxerga. Sem isso o
+    job cai em CPU silenciosamente.
+    """
+    import shutil
+    import subprocess
+
+    info: dict = {
+        "torch": None,
+        "cuda_build": None,
+        "cuda_disponivel": None,
+        "device_count": 0,
+        "devices": [],
+        "nvidia_smi": None,
+    }
+    try:
+        import torch
+
+        info["torch"] = torch.__version__
+        info["cuda_build"] = torch.version.cuda
+        info["cuda_disponivel"] = torch.cuda.is_available()
+        info["device_count"] = torch.cuda.device_count()
+        info["devices"] = [
+            torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())
+        ]
+    except Exception as exc:  # pragma: no cover - ambiente sem torch
+        info["erro_torch"] = str(exc)
+
+    nvidia_smi = shutil.which("nvidia-smi")
+    if nvidia_smi:
+        try:
+            out = subprocess.run(
+                [
+                    nvidia_smi,
+                    "--query-gpu=name,driver_version,memory.total",
+                    "--format=csv,noheader",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            info["nvidia_smi"] = (out.stdout or out.stderr).strip()
+        except Exception as exc:  # pragma: no cover - falha do binário
+            info["nvidia_smi"] = f"erro: {exc}"
+
+    return info
