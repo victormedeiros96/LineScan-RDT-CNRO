@@ -732,6 +732,49 @@ Os pesos/modelo vêm do release público
   `ICP_MODEL_DIR` (padrão `/opt/trinca-detector`) e o compose monta o diretório
   em `/opt/trinca-detector`.
 
+#### GPU/CUDA no deploy (RDT1-30)
+
+A detecção automática de juntas exige **GPU**: em CPU ela fica muito lenta e,
+hoje, o container não deve cair em CPU silenciosamente. No Coolify
+(`docker-compose.coolify.yml`) o `backend` e o `worker` declaram a GPU de duas
+formas complementares:
+
+```yaml
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    runtime: nvidia
+```
+
+O Compose v2 ignora o campo legado `runtime: nvidia` sem a reserva explícita de
+dispositivo.
+
+O `torch`/`torchvision` são fixados no **CUDA 12.6**
+(`--extra-index-url https://download.pytorch.org/whl/cu126`,
+`torch==2.14.1+cu126`, `torchvision==0.29.1+cu126`) para casar com a base
+`nvidia/cuda:12.6.3` e com o driver do host (550.163.01 → CUDA 12.6). Sem o
+pino, o `torch>=2.4.0` resolvia para wheels CUDA 13, que esse driver não
+suporta: `torch.cuda.is_available()` virava `false` e a inferência caía em CPU.
+
+Para conferir o ambiente (endpoint público de diagnóstico):
+
+```bash
+curl -s https://0650163.xyz/debug/gpu
+# esperado:
+# {"torch":"2.14.1+cu126","cuda_build":"12.6","cuda_disponivel":true,
+#  "device_count":2,"devices":["NVIDIA RTX A5500","NVIDIA RTX A5500"], ...}
+```
+
+Após uma inferência (`POST /debug/inferir-imagem-pt`), `GET /debug/modelos` deve
+trazer `vram` com valores > 0 (ex.: `allocated_mb`/`reserved_mb`); `vram: null`
+significa CUDA não inicializada (container sem GPU ou torch/driver
+incompatíveis). No host, `nvidia-smi` e `docker info | grep -i runtime` (deve
+listar `nvidia`) confirmam driver e runtime.
+
 O `trinca-detector` é GPL-3.0 e permanece isolado em `/opt/trinca-detector`,
 acessado por adaptador (`ProvedorTrincaDetector`).
 
