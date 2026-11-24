@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import type { WheelEvent } from 'react'
 import {
   carregarAnalise,
+  criarMarcacaoIcp,
   getConcatenadaUrl,
   getIcpExportUrl,
   getIcpRecorteUrl,
@@ -9,13 +10,16 @@ import {
   importarFichaIcp,
   listarFaixas,
   listarIcp,
+  listarMarcacoesIcp,
   obterPlacaIcp,
   obterPlacasIcp,
+  removerMarcacaoIcp,
 } from '../services/api'
 import type { FaixaInfo, IcpPlacaDetalhe } from '../services/api'
 import type {
   AnaliseResponse,
   IcpInventario,
+  IcpMarcacao,
   IcpPlaca,
   IcpResultado,
 } from '../types'
@@ -178,6 +182,11 @@ export function IcpView() {
   const [detalhePlaca, setDetalhePlaca] = useState<IcpPlacaDetalhe | null>(null)
   const [carregandoPlaca, setCarregandoPlaca] = useState(false)
   const [erroPlaca, setErroPlaca] = useState('')
+  const [marcacoes, setMarcacoes] = useState<IcpMarcacao[]>([])
+  const [novoTipo, setNovoTipo] = useState('1')
+  const [novaSeveridade, setNovaSeveridade] = useState('A')
+  const [salvandoMarcacao, setSalvandoMarcacao] = useState(false)
+  const [erroMarcacao, setErroMarcacao] = useState('')
   const [zoom, setZoom] = useState(100)
 
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -301,15 +310,17 @@ export function IcpView() {
       setResultados(lista)
       setFaixas(faixasViagem)
 
-      const [inv, analiseViagem] = await Promise.all([
+      const [inv, analiseViagem, marcacoesViagem] = await Promise.all([
         obterPlacasIcp(limpo).catch((err: unknown) => {
           if (statusErro(err) === 404) return null
           throw err
         }),
         carregarAnalise(limpo).catch(() => null),
+        listarMarcacoesIcp(limpo).catch(() => [] as IcpMarcacao[]),
       ])
       setInventario(inv)
       setAnalise(analiseViagem)
+      setMarcacoes(marcacoesViagem)
       if (lista.length === 0) {
         setAviso('Nenhum resultado de ICP persistido. Importe a ficha de inspeção para calcular.')
       }
@@ -444,6 +455,80 @@ export function IcpView() {
       ?? null,
     [detalhePlaca, inventario, placaSelecionada],
   )
+
+  const marcacoesDaPlaca = useMemo(
+    () =>
+      marcacoes.filter(
+        (item) => item.placa_id === placaSelecionada && item.ativo !== false,
+      ),
+    [marcacoes, placaSelecionada],
+  )
+
+  const resultadoAmostra = useMemo(
+    () =>
+      placaDetalhe
+        ? resultados.find((item) => item.amostra === placaDetalhe.amostra_id) ?? null
+        : null,
+    [resultados, placaDetalhe],
+  )
+
+  const atualizarResultadoAmostra = useCallback((resultado: IcpResultado) => {
+    setResultados((atuais) => {
+      const indice = atuais.findIndex((item) => item.amostra === resultado.amostra)
+      if (indice === -1) return [...atuais, resultado]
+      const copia = [...atuais]
+      copia[indice] = resultado
+      return copia
+    })
+  }, [])
+
+  const mesclarMarcacoes = useCallback((amostra: string, lista: IcpMarcacao[]) => {
+    setMarcacoes((atuais) => [
+      ...atuais.filter((item) => item.amostra !== amostra),
+      ...lista,
+    ])
+  }, [])
+
+  const aoMarcarDefeito = useCallback(async () => {
+    const nome = viagemNome.trim()
+    if (!nome || !placaSelecionada || !placaDetalhe) return
+    setSalvandoMarcacao(true)
+    setErroMarcacao('')
+    try {
+      const resposta = await criarMarcacaoIcp(nome, {
+        placa_id: placaSelecionada,
+        tipo: Number(novoTipo),
+        severidade: novaSeveridade,
+      })
+      mesclarMarcacoes(placaDetalhe.amostra_id, resposta.marcacoes)
+      atualizarResultadoAmostra(resposta.resultado)
+    } catch (err: unknown) {
+      setErroMarcacao(mensagemErro(err))
+    } finally {
+      setSalvandoMarcacao(false)
+    }
+  }, [
+    viagemNome,
+    placaSelecionada,
+    placaDetalhe,
+    novoTipo,
+    novaSeveridade,
+    mesclarMarcacoes,
+    atualizarResultadoAmostra,
+  ])
+
+  const aoRemoverMarcacao = useCallback(async (marcacaoId: string) => {
+    const nome = viagemNome.trim()
+    if (!nome || !placaDetalhe) return
+    setErroMarcacao('')
+    try {
+      const resposta = await removerMarcacaoIcp(nome, marcacaoId)
+      mesclarMarcacoes(placaDetalhe.amostra_id, resposta.marcacoes)
+      atualizarResultadoAmostra(resposta.resultado)
+    } catch (err: unknown) {
+      setErroMarcacao(mensagemErro(err))
+    }
+  }, [viagemNome, placaDetalhe, mesclarMarcacoes, atualizarResultadoAmostra])
 
   const zoomRoda = useCallback((event: WheelEvent<HTMLDivElement>) => {
     if (!event.ctrlKey && !event.metaKey) return
@@ -848,6 +933,62 @@ export function IcpView() {
                       ) : (
                         <p className="icp-aviso">Placa sem recorte de imagem.</p>
                       )}
+                      <div className="icp-marcacoes">
+                        <h5>Patologias marcadas</h5>
+                        {marcacoesDaPlaca.length === 0 && (
+                          <p className="icp-detalhe-vazio">Nenhuma marcação manual nesta placa.</p>
+                        )}
+                        <ul>
+                          {marcacoesDaPlaca.map((marcacao) => (
+                            <li key={marcacao.id}>
+                              <span>
+                                {marcacao.tipo} — {DEFEITO_NOMES[marcacao.tipo] ?? 'Defeito'} ·{' '}
+                                {marcacao.severidade}
+                              </span>
+                              <button
+                                type="button"
+                                className="btn-sm"
+                                onClick={() => aoRemoverMarcacao(marcacao.id)}
+                              >
+                                Remover
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                        <div className="icp-marcacao-form">
+                          <select value={novoTipo} onChange={(e) => setNovoTipo(e.target.value)}>
+                            {Object.entries(DEFEITO_NOMES).map(([tipo, nome]) => (
+                              <option key={tipo} value={tipo}>{tipo} — {nome}</option>
+                            ))}
+                          </select>
+                          <select
+                            value={novaSeveridade}
+                            onChange={(e) => setNovaSeveridade(e.target.value)}
+                          >
+                            <option value="A">A</option>
+                            <option value="M">M</option>
+                            <option value="B">B</option>
+                          </select>
+                          <button
+                            type="button"
+                            className="btn-sm"
+                            onClick={aoMarcarDefeito}
+                            disabled={salvandoMarcacao}
+                          >
+                            {salvandoMarcacao ? 'Salvando...' : 'Marcar nesta placa'}
+                          </button>
+                        </div>
+                        {erroMarcacao && <p className="icp-erro">{erroMarcacao}</p>}
+                        {resultadoAmostra && (
+                          <p className="icp-composicao">
+                            Amostra {resultadoAmostra.amostra}: ICP{' '}
+                            {formatarNumero(resultadoAmostra.icp, 2)} ·{' '}
+                            {resultadoAmostra.composicao
+                              ? `${resultadoAmostra.composicao.defeitos_ficha} da ficha + ${resultadoAmostra.composicao.marcacoes_manuais} manual(is)`
+                              : `${resultadoAmostra.defeitos.length} defeito(s)`}
+                          </p>
+                        )}
+                      </div>
                       <div className="icp-placa-nav">
                         <button
                           type="button"
