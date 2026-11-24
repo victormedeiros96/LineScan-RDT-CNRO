@@ -683,6 +683,16 @@ API: `POST /api/relatorios/icp/{viagem}/placas` gera/persiste, aceitando
 (geometrias já detectadas) ou, como fallback, `periodo_m`/`fase_m`/`juntas_km`;
 `GET .../icp/{viagem}/placas` e `GET .../icp/{viagem}/amostras` leem.
 
+**Detalhe e recorte da placa (RDT1-24).**
+`GET /api/relatorios/icp/{viagem}/placas/{placa_id}` devolve a placa, a amostra
+a que pertence, os ids da placa anterior/próxima **dentro da amostra** e se há
+recorte. `GET .../placas/{placa_id}/recorte` serve o PNG gravado em
+`icp_rois/`; o nome do arquivo vem do inventário (`placa.roi.arquivo`) e é
+validado contra o diretório da viagem (sem path traversal, 400 quando inválido,
+404 quando a placa/arquivo não existe). A tela do ICP usa esses endpoints no
+painel lateral: clicar numa placa abre o recorte ampliado com KM, amostra,
+comprimento/largura e botões anterior/próxima; placa sem ROI mostra aviso.
+
 Validação BR-364 (rede periódica): 120 m com período de **5,12 m** gera 23
 placas; com **4,10 m** gera 29 placas (`backend/tests/test_icp_placas.py`). A
 validação por juntas cobre vãos variáveis na mesma viagem (5,12 / 5,10 / 4,78 /
@@ -815,6 +825,11 @@ exportar o laudo.
   convenção do IGG; as ROIs de placa são desenhadas a partir de
   `km_inicio/km_fim` e das metadados das faixas (`GET /api/pastas/faixas/{viagem}`),
   e as patologias detectadas (quando existe análise) aparecem tracejadas.
+* **Detalhe da placa** — clicar na placa (no overlay ou na lista lateral) abre o
+  recorte real da imagem em `icp_rois/`, com KM início/fim, amostra,
+  comprimento/largura e navegação anterior/próxima dentro da amostra
+  (`GET .../placas/{id}` e `GET .../placas/{id}/recorte`, RDT1-24). Placa sem
+  recorte exibe aviso em vez da imagem.
 * **Exportar laudo** — `GET /api/relatorios/icp/{viagem}/exportar` devolve um
   CSV com uma linha por defeito (amostra, metadados, tipo/defeito, severidade,
   densidade, placas afetadas, VD) e as colunas de resumo (VDT, q, VDC, ICP,

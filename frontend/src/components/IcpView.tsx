@@ -4,13 +4,15 @@ import {
   carregarAnalise,
   getConcatenadaUrl,
   getIcpExportUrl,
+  getIcpRecorteUrl,
   gerarPlacasIcp,
   importarFichaIcp,
   listarFaixas,
   listarIcp,
+  obterPlacaIcp,
   obterPlacasIcp,
 } from '../services/api'
-import type { FaixaInfo } from '../services/api'
+import type { FaixaInfo, IcpPlacaDetalhe } from '../services/api'
 import type {
   AnaliseResponse,
   IcpInventario,
@@ -173,6 +175,9 @@ export function IcpView() {
   const [expandidos, setExpandidos] = useState<Set<string>>(new Set())
   const [faixaSelecionada, setFaixaSelecionada] = useState('')
   const [placaSelecionada, setPlacaSelecionada] = useState<string | null>(null)
+  const [detalhePlaca, setDetalhePlaca] = useState<IcpPlacaDetalhe | null>(null)
+  const [carregandoPlaca, setCarregandoPlaca] = useState(false)
+  const [erroPlaca, setErroPlaca] = useState('')
   const [zoom, setZoom] = useState(100)
 
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -413,6 +418,32 @@ export function IcpView() {
       return proximo
     })
   }, [])
+
+  const abrirPlaca = useCallback(async (id: string) => {
+    setPlacaSelecionada(id)
+    setDetalhePlaca(null)
+    setErroPlaca('')
+    const local = inventario?.placas.find((placa) => placa.id === id)
+    if (local?.faixa) setFaixaSelecionada(local.faixa)
+    const nome = viagemNome.trim()
+    if (!nome) return
+    setCarregandoPlaca(true)
+    try {
+      setDetalhePlaca(await obterPlacaIcp(nome, id))
+    } catch (err: unknown) {
+      setErroPlaca(mensagemErro(err))
+    } finally {
+      setCarregandoPlaca(false)
+    }
+  }, [viagemNome, inventario])
+
+  const placaDetalhe = useMemo(
+    () =>
+      detalhePlaca?.placa
+      ?? inventario?.placas.find((placa) => placa.id === placaSelecionada)
+      ?? null,
+    [detalhePlaca, inventario, placaSelecionada],
+  )
 
   const zoomRoda = useCallback((event: WheelEvent<HTMLDivElement>) => {
     if (!event.ctrlKey && !event.metaKey) return
@@ -681,7 +712,12 @@ export function IcpView() {
               <label>Faixa:</label>
               <select
                 value={faixaSelecionada}
-                onChange={(e) => { setFaixaSelecionada(e.target.value); setPlacaSelecionada(null) }}
+                onChange={(e) => {
+                  setFaixaSelecionada(e.target.value)
+                  setPlacaSelecionada(null)
+                  setDetalhePlaca(null)
+                  setErroPlaca('')
+                }}
               >
                 {faixasComPlacas.map((faixa) => (
                   <option key={faixa.arquivo} value={faixa.arquivo}>
@@ -746,7 +782,7 @@ export function IcpView() {
                           stroke={cor}
                           strokeWidth={selecionada ? 7 : 3}
                           style={{ cursor: 'pointer' }}
-                          onClick={() => setPlacaSelecionada(placa.id)}
+                          onClick={() => abrirPlaca(placa.id)}
                         />
                         <text
                           x={rect.x + 16}
@@ -773,7 +809,7 @@ export function IcpView() {
                   <li
                     key={placa.id}
                     className={placa.id === placaSelecionada ? 'ativa' : ''}
-                    onClick={() => setPlacaSelecionada(placa.id)}
+                    onClick={() => abrirPlaca(placa.id)}
                   >
                     <span className="icp-placa-cor" style={{ background: corAmostra(placa.amostra_id) }} />
                     <span className="icp-placa-id">{placa.id}</span>
@@ -783,17 +819,57 @@ export function IcpView() {
                   </li>
                 ))}
               </ul>
-              {placaSelecionada && (() => {
-                const placa = placasDaFaixa.find((p) => p.id === placaSelecionada)
-                if (!placa) return null
-                return (
-                  <div className="icp-placa-detalhe">
-                    <h4>{placa.id}</h4>
-                    <p>KM {formatarNumero(placa.km_inicio, 3)} – {formatarNumero(placa.km_fim, 3)}</p>
-                    <p>Amostra {placa.amostra_id} · {formatarNumero(placa.comprimento_m, 2)} m × {formatarNumero(placa.largura_m, 2)} m</p>
-                  </div>
-                )
-              })()}
+              {placaSelecionada && (
+                <div className="icp-placa-detalhe">
+                  <h4>{placaSelecionada}</h4>
+                  {carregandoPlaca && <p className="icp-detalhe-vazio">Carregando recorte...</p>}
+                  {erroPlaca && <p className="icp-erro">{erroPlaca}</p>}
+                  {placaDetalhe && (
+                    <>
+                      <p>
+                        KM {formatarNumero(placaDetalhe.km_inicio, 3)} –{' '}
+                        {formatarNumero(placaDetalhe.km_fim, 3)}
+                      </p>
+                      <p>
+                        Amostra {placaDetalhe.amostra_id} ·{' '}
+                        {formatarNumero(placaDetalhe.comprimento_m, 2)} m ×{' '}
+                        {formatarNumero(placaDetalhe.largura_m, 2)} m
+                      </p>
+                      <p className="icp-placa-faixa">Faixa {placaDetalhe.faixa}</p>
+                      {detalhePlaca?.recorte_disponivel ? (
+                        <img
+                          className="icp-placa-recorte"
+                          src={getIcpRecorteUrl(viagemNome.trim(), placaSelecionada)}
+                          alt={`Recorte da placa ${placaSelecionada}`}
+                          onError={() =>
+                            setErroPlaca('Recorte da placa não encontrado em disco.')
+                          }
+                        />
+                      ) : (
+                        <p className="icp-aviso">Placa sem recorte de imagem.</p>
+                      )}
+                      <div className="icp-placa-nav">
+                        <button
+                          type="button"
+                          className="btn-sm"
+                          disabled={!detalhePlaca?.anterior}
+                          onClick={() => detalhePlaca?.anterior && abrirPlaca(detalhePlaca.anterior)}
+                        >
+                          ← Anterior
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-sm"
+                          disabled={!detalhePlaca?.proxima}
+                          onClick={() => detalhePlaca?.proxima && abrirPlaca(detalhePlaca.proxima)}
+                        >
+                          Próxima →
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
             </aside>
           </div>
         </div>

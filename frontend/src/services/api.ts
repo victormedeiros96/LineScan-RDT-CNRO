@@ -8,6 +8,8 @@ import type {
   IcpPlacasResponse,
   IcpResultado,
   IcpInventario,
+  IcpPlaca,
+  IcpAmostra,
 } from '../types'
 
 const api = axios.create({
@@ -317,6 +319,30 @@ export async function gerarPlacasIcp(
     payload,
   )
   return data
+}
+
+export interface IcpPlacaDetalhe {
+  viagem: string
+  placa: IcpPlaca
+  amostra: IcpAmostra | null
+  anterior: string | null
+  proxima: string | null
+  recorte_disponivel: boolean
+  recorte_url: string | null
+}
+
+export async function obterPlacaIcp(
+  viagemNome: string,
+  placaId: string,
+): Promise<IcpPlacaDetalhe> {
+  const { data } = await api.get(
+    `/relatorios/icp/${encodeURIComponent(viagemNome)}/placas/${encodeURIComponent(placaId)}`,
+  )
+  return data
+}
+
+export function getIcpRecorteUrl(viagemNome: string, placaId: string): string {
+  return `/api/relatorios/icp/${encodeURIComponent(viagemNome)}/placas/${encodeURIComponent(placaId)}/recorte`
 }
 
 export function getIcpExportUrl(viagemNome: string): string {
