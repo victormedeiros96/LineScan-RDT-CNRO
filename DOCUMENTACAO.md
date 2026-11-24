@@ -652,17 +652,24 @@ como os demais testes de banco.
 ### Placas do pavimento rígido e amostras de ICP (RDT1-18)
 
 A etapa de placas (`backend/src/services/icp_placas.py`) usa o pacote
-`juntas-detector@v0.2.0` para materializar a **rede periódica de juntas
-transversais** e a grade de placas do rígido. Ela não depende de GPU: a
-geometria roda em CPU; a calibração (`periodo_m` + `fase_m`) ou as juntas
-conhecidas (`juntas_km`) entram pela API.
+`juntas-detector@v0.2.0` para materializar a grade de placas do rígido. Ela não
+depende de GPU: a geometria roda em CPU. Há duas origens de geometria:
 
-* **Rede de juntas** — `placas.posicoes_rede(fase + k·P)` no strip global da
-  viagem; posições vêm da rede, não de detecções individuais.
-* **Placas** — `placas.poligonos` fecha cada placa entre duas transversais e
-  duas longitudinais; `placas.distancia_transversais` mede o comprimento em
-  metros. Placas > `comprimento_max_m` (padrão 9 m) ou em lacuna de amostragem
-  são descartadas.
+* **Juntas detectadas na imagem** (preferido, RDT1-32) — a segmentação do modelo
+  (`juntas-detector` + `trinca-detector`) devolve a posição (`km`) e a inclinação
+  de cada transversal; `gerar_placas_por_juntas` monta cada placa como o
+  intervalo entre **duas juntas consecutivas reais**. O comprimento de cada
+  placa vem da imagem e **pode variar dentro da mesma viagem** — não se declara
+  um tamanho fixo de placa. A largura vem da extensão da junta na faixa.
+* **Rede periódica** (fallback) — `periodo_m` + `fase_m`, ou `juntas_km`
+  calibradas, materializam `placas.posicoes_rede(fase + k·P)`.
+
+* **Placas** — no modo por juntas cada placa é o quadrilátero entre duas
+  transversais e a extensão lateral da junta; no modo periódico,
+  `placas.poligonos` fecha cada placa entre duas transversais e duas
+  longitudinais. `placas.distancia_transversais` mede o comprimento em metros.
+  Placas > `comprimento_max_m` (padrão 9 m), em lacuna de amostragem ou sem
+  sobreposição lateral entre as juntas são descartadas.
 * **Coordenadas** — cada canto volta para a faixa original de 5 m
   (`pontos_faixa`: arquivo, `x`, `y`) e também é exposto em `poligono_m`
   (`x_m`, `km`). O topo da faixa é o menor KM.
@@ -671,11 +678,15 @@ conhecidas (`juntas_km`) entram pela API.
 * **Persistência** — inventário em `dados/<viagem>/icp_placas.json` e, quando
   os PNGs das faixas existem, ROI por placa em `dados/<viagem>/icp_rois/`.
 
-API: `POST /api/relatorios/icp/{viagem}/placas` gera/persiste;
+API: `POST /api/relatorios/icp/{viagem}/placas` gera/persiste, aceitando
+`detectar: true` (roda o modelo e usa a geometria segmentada), `juntas`
+(geometrias já detectadas) ou, como fallback, `periodo_m`/`fase_m`/`juntas_km`;
 `GET .../icp/{viagem}/placas` e `GET .../icp/{viagem}/amostras` leem.
 
-Validação BR-364: 120 m com período de **5,12 m** gera 23 placas; com **4,10 m**
-gera 29 placas (`backend/tests/test_icp_placas.py`).
+Validação BR-364 (rede periódica): 120 m com período de **5,12 m** gera 23
+placas; com **4,10 m** gera 29 placas (`backend/tests/test_icp_placas.py`). A
+validação por juntas cobre vãos variáveis na mesma viagem (5,12 / 5,10 / 4,78 /
+5,50 m), confirmando que o tamanho não é fixo (`gerar_placas_por_juntas`).
 
 ### Processamento e juntas no job do rígido (RDT1-21 / RDT1-22)
 
@@ -693,8 +704,9 @@ A calibração (`backend/src/services/icp_juntas.py`) aceita, nesta ordem:
 * `periodo_m` + `fase_m` — calibração explícita;
 * **detecção automática**: pacote `juntas-detector` v0.2.0 (wheel) +
   modelo externo `trinca-detector` v2.1.0 (GPL-3.0), via `ProvedorTrincaDetector`.
-  O detector devolve o período/fase por rede periódica; as posições individuais
-  não são usadas para montar a grade.
+  O detector devolve período/fase **e** a geometria de cada junta segmentada
+  (`km`, `angulo_graus`, `x0`, `x1`); a etapa de placas usa essa geometria para
+  montar cada placa entre duas juntas reais (tamanho variável na viagem).
 
 Configuração em `modelos/icp/config.json`, bloco `"juntas"`:
 

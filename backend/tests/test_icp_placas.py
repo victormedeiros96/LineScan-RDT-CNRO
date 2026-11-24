@@ -9,12 +9,14 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import pytest
 
 from src.services.icp_placas import (
     FaixaInfo,
     agrupar_amostras,
     calibrar_por_juntas,
     gerar_placas,
+    gerar_placas_por_juntas,
     listar_faixas,
     montar_inventario,
     salvar_rois,
@@ -227,3 +229,91 @@ def test_listar_faixas_le_metadados(tmp_path: Path) -> None:
             altura_px=5120,
         )
     ]
+
+
+# ── Placas a partir das juntas segmentadas na imagem (RDT1-32) ───────────────
+def _juntas(km0: float, comprimentos_m: list[float]) -> list[dict]:
+    """Juntas transversais reais a partir de uma sequência de comprimentos.
+
+    Cada junta é uma linha horizontal (ângulo 0) que cobre a largura inteira da
+    faixa (0–4095 px), como a segmentação do modelo devolve.
+    """
+    juntas = [{"km": km0, "angulo_graus": 0.0, "x0": 0.0, "x1": 4095.0}]
+    for comprimento in comprimentos_m:
+        juntas.append(
+            {
+                "km": juntas[-1]["km"] + comprimento / 1000.0,
+                "angulo_graus": 0.0,
+                "x0": 0.0,
+                "x1": 4095.0,
+            }
+        )
+    return juntas
+
+
+def test_juntas_detectadas_geram_placas_com_tamanhos_variaveis() -> None:
+    """O comprimento de cada placa vem da distância entre juntas reais.
+
+    Na mesma viagem os vãos podem variar (5,12 / 5,10 / 4,78 / 5,50 m) — não há
+    período fixo. Cada placa é o intervalo entre duas juntas consecutivas.
+    """
+    km0 = 100.0
+    comprimentos = [5.12, 5.10, 4.78, 5.50]
+    juntas = _juntas(km0, comprimentos)
+
+    placas, descartadas = gerar_placas_por_juntas(_faixas(km_inicio=km0), juntas)
+
+    assert descartadas == []
+    assert [p["comprimento_m"] for p in placas] == [
+        pytest.approx(c, abs=1e-3) for c in comprimentos
+    ]
+    # Cada placa começa e termina nas juntas reais.
+    for placa, inicio, fim in zip(placas, juntas, juntas[1:]):
+        assert placa["km_inicio"] == pytest.approx(inicio["km"], abs=1e-3)
+        assert placa["km_fim"] == pytest.approx(fim["km"], abs=1e-3)
+    # A largura sai da extensão da junta na imagem (4095 px × 0,9765625 mm/px),
+    # não de um valor declarado; é a mesma em todas as placas desta viagem.
+    largura_esperada = 4095 * 0.9765625 / 1000.0
+    assert all(p["largura_m"] == pytest.approx(largura_esperada, abs=1e-3) for p in placas)
+    assert placas[0]["faixa"] == "lote_0000_faixa_0.png"
+
+
+def test_juntas_detectadas_sem_sobreposicao_lateral_sao_descartadas() -> None:
+    """Duas juntas que não se sobrepõem em x não fecham uma placa."""
+    km0 = 100.0
+    juntas = [
+        {"km": km0, "angulo_graus": 0.0, "x0": 0.0, "x1": 1500.0},
+        {"km": km0 + 0.00512, "angulo_graus": 0.0, "x0": 2000.0, "x1": 4095.0},
+    ]
+
+    placas, descartadas = gerar_placas_por_juntas(_faixas(km_inicio=km0), juntas)
+
+    assert placas == []
+    assert descartadas[0]["motivo"] == "juntas sem sobreposição lateral"
+
+
+def test_juntas_detectadas_com_vao_longo_sao_descartadas() -> None:
+    """Um vão maior que o limite físico de placa é descartado, não forçado."""
+    km0 = 100.0
+    juntas = _juntas(km0, [12.0])
+
+    placas, descartadas = gerar_placas_por_juntas(_faixas(km_inicio=km0), juntas)
+
+    assert placas == []
+    assert descartadas[0]["motivo"] == "comprimento fora do limite"
+
+
+def test_montar_inventario_por_juntas_registra_fonte_e_amostras() -> None:
+    km0 = 100.0
+    juntas = _juntas(km0, [5.12] * 25)
+
+    inventario = montar_inventario(
+        _faixas(km_inicio=km0, n_blocos=7), juntas=juntas, mm_por_px_y=0.9765625
+    )
+
+    assert inventario["calibracao"]["fonte"] == "juntas_detectadas"
+    assert inventario["calibracao"]["n_juntas"] == 26
+    assert len(inventario["placas"]) == 25
+    assert len(inventario["amostras"]) == 2
+    assert inventario["amostras"][0]["n_placas"] == 20
+    assert all(p["comprimento_m"] == pytest.approx(5.12, abs=1e-3) for p in inventario["placas"])

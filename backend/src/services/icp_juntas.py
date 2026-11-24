@@ -7,9 +7,10 @@ A calibração pode vir de três fontes, nesta ordem:
 3. **detecção automática** com o pacote ``juntas-detector`` v0.2.0 e o modelo
    externo ``trinca-detector`` v2.1.0 (GPL-3.0), via ``ProvedorTrincaDetector``.
 
-O detector é usado apenas para calibrar a rede periódica (período + fase). A
-grade de placas em si é materializada por ``icp_placas`` a partir dessa
-calibração — não se usa a posição individual de cada junta detectada.
+O detector é usado para calibrar a rede periódica (período + fase) **e** para
+entregar a geometria das juntas realmente segmentadas. ``icp_placas`` monta cada
+placa como o intervalo entre duas juntas consecutivas detectadas — o tamanho sai
+da imagem e pode variar dentro da mesma viagem, sem um tamanho fixo declarado.
 
 Norma: DNIT 062/2004-PRO (avaliação objetiva de pavimento rígido).
 """
@@ -156,14 +157,25 @@ class _ProvedorFaixas:
         return float(faixa.km_inicio) + (y0 + y_na_janela) * metros_por_px / 1000.0
 
 
-def detectar_juntas_km(
+def detectar_juntas_geometria(
     base: Path,
     faixas: list[icp_placas.FaixaInfo],
     config: ConfigJuntas,
     *,
     max_frames: int = MAX_FRAMES_CALIBRACAO,
-) -> list[float]:
-    """Detecta as juntas transversais e devolve os KM absolutos (ordenados)."""
+) -> list[dict[str, Any]]:
+    """Detecta as juntas transversais e devolve a geometria segmentada na imagem.
+
+    Cada item traz:
+
+    * ``km`` — posição da junta no eixo da via (no centro da faixa);
+    * ``angulo_graus`` — inclinação da transversal na imagem;
+    * ``x0``/``x1`` — extensão lateral (px) da junta na faixa.
+
+    É essa geometria que ``icp_placas.gerar_placas_por_juntas`` usa para montar
+    cada placa como o intervalo entre duas juntas consecutivas **reais** — sem
+    assumir um tamanho de placa fixo.
+    """
     if not config.disponivel:
         raise RuntimeError(
             "Modelo de juntas indisponível. Configure 'juntas' em "
@@ -171,15 +183,16 @@ def detectar_juntas_km(
             "ICP_NUCLIO_DIR/ICP_MODELO_PT."
         )
 
-    import numpy as np
-    from juntas_detector import ProvedorTrincaDetector
+    from juntas_detector import ProvedorTrincaDetector, geometria
 
     provedor = _ProvedorFaixas(base, faixas)
     modelo = ProvedorTrincaDetector(
         config.nuclio_dir, config.modelo_pt, limiar=config.limiar
     )
+    largura = icp_placas.LARGURA_FAIXA_PX
+    x_ref = largura / 2.0
 
-    juntas: list[float] = []
+    juntas: list[dict[str, Any]] = []
     for indice in range(min(len(provedor), max_frames)):
         imagem = provedor.frame(indice)
         if imagem is None or imagem.size == 0:
@@ -188,20 +201,48 @@ def detectar_juntas_km(
         pontos = ProvedorTrincaDetector.para_pontos(formas, "junta")
         if not pontos:
             continue
-        # Em 2 m cabe no máximo uma junta transversal: usa o ponto médio da
-        # polilinha de maior extensão vertical.
-        polilinha = max(pontos, key=lambda pts: float(np.ptp(pts[:, 1])) if len(pts) else 0.0)
-        y_medio = float(np.mean(polilinha[:, 1]))
-        juntas.append(provedor.km_da_janela(indice, y_medio))
+        grupos = geometria.agrupar(
+            pontos, largura=largura, altura=int(imagem.shape[0])
+        )
+        transversais = [g for g in grupos if g.get("orientacao") == "h"]
+        if not transversais:
+            continue
+        # Em 2 m cabe no máximo uma junta transversal: fica a de maior cobertura.
+        junta = max(transversais, key=lambda g: float(g["t1"] - g["t0"]))
+        y_centro = float(junta["a"]) * x_ref + float(junta["b"])
+        juntas.append(
+            {
+                "km": provedor.km_da_janela(indice, y_centro),
+                "angulo_graus": float(junta.get("angulo_graus") or 0.0),
+                "x0": float(junta["t0"]),
+                "x1": float(junta["t1"]),
+            }
+        )
 
-    juntas.sort()
+    juntas.sort(key=lambda j: j["km"])
     if len(juntas) >= 2:
         agrupadas = [juntas[0]]
-        for km in juntas[1:]:
-            if abs(km - agrupadas[-1]) >= TOLERANCIA_JUNTA_M:
-                agrupadas.append(km)
+        for junta in juntas[1:]:
+            if abs(junta["km"] - agrupadas[-1]["km"]) >= TOLERANCIA_JUNTA_M:
+                agrupadas.append(junta)
         juntas = agrupadas
     return juntas
+
+
+def detectar_juntas_km(
+    base: Path,
+    faixas: list[icp_placas.FaixaInfo],
+    config: ConfigJuntas,
+    *,
+    max_frames: int = MAX_FRAMES_CALIBRACAO,
+) -> list[float]:
+    """Detecta as juntas transversais e devolve só os KM absolutos (ordenados)."""
+    return [
+        float(junta["km"])
+        for junta in detectar_juntas_geometria(
+            base, faixas, config, max_frames=max_frames
+        )
+    ]
 
 
 def calibrar_viagem(
@@ -232,7 +273,8 @@ def calibrar_viagem(
             mm_por_px_y=detector.mm_por_px_y,
         )
 
-    juntas_km = detectar_juntas_km(base, faixas, detector)
+    juntas_geometria = detectar_juntas_geometria(base, faixas, detector)
+    juntas_km = [float(junta["km"]) for junta in juntas_geometria]
     if len(juntas_km) < 3:
         raise RuntimeError(
             f"Detecção de juntas insuficiente ({len(juntas_km)} encontradas); "
@@ -245,6 +287,9 @@ def calibrar_viagem(
     )
     cal["fonte"] = "detector"
     cal["n_juntas"] = len(juntas_km)
+    # A geometria segmentada segue com a calibração para a etapa de placas: cada
+    # placa é montada entre duas juntas reais, sem tamanho fixo declarado.
+    cal["juntas_geometria"] = juntas_geometria
     return cal
 
 

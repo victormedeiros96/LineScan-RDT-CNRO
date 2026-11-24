@@ -204,12 +204,25 @@ def _processar_placas_icp(
     calibracao = icp_juntas.calibrar_viagem(
         destino, faixas, config=juntas, detector=detector
     )
-    inventario = icp_placas.montar_inventario(
-        faixas,
-        periodo_m=float(calibracao["periodo_m"]),
-        fase_m=float(calibracao.get("fase_m") or 0.0),
-        calibracao=calibracao,
-    )
+    juntas_geometria = calibracao.get("juntas_geometria")
+    if juntas_geometria:
+        # Placas montadas a partir das juntas realmente segmentadas na imagem:
+        # o comprimento de cada placa vem da detecção e pode variar na viagem.
+        # A geometria é no display da faixa (1024 px/m), por isso MM_POR_PX.
+        inventario = icp_placas.montar_inventario(
+            faixas,
+            juntas=juntas_geometria,
+            calibracao=calibracao,
+            mm_por_px_x=icp_placas.MM_POR_PX,
+            mm_por_px_y=icp_placas.MM_POR_PX,
+        )
+    else:
+        inventario = icp_placas.montar_inventario(
+            faixas,
+            periodo_m=float(calibracao["periodo_m"]),
+            fase_m=float(calibracao.get("fase_m") or 0.0),
+            calibracao=calibracao,
+        )
     total_rois = icp_placas.salvar_rois(destino, faixas, inventario["placas"])
     icp_placas.salvar_inventario(destino, inventario)
     icp_juntas.salvar_calibracao(destino, calibracao)
