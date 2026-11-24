@@ -270,3 +270,100 @@ export interface IcpPlacasResponse {
   inventario?: IcpInventario
   [key: string]: unknown
 }
+
+export interface IcpLaudoItem {
+  amostra: string
+  rodovia: string | null
+  km: number | null
+  km_inicial: number | null
+  km_final: number | null
+  faixa: string | null
+  tipo?: number | null
+  nome?: string | null
+  severidade?: string | null
+  densidade?: number | null
+  placas_afetadas?: number | null
+  vd?: number | null
+  juntas_afetadas?: number | null
+  extensao_m?: number | null
+  largura_placa_m?: number | null
+  critico?: boolean
+}
+
+export interface IcpLaudoAmostra {
+  amostra: string
+  rodovia: string | null
+  km_inicial: number | null
+  km_final: number | null
+  faixa: string | null
+  total_placas: number | null
+  vdt: number | null
+  q: number | null
+  vdc: number | null
+  icp: number
+  conceito: string | null
+  em_branco: boolean
+  critico: boolean
+  largura_placa_m: number | null
+}
+
+export interface IcpLaudoDistribuicao {
+  conceito: string
+  quantidade: number
+  percentual: number
+  icp_min: number
+  icp_max: number
+}
+
+export interface IcpLaudoSecao {
+  resumo: {
+    amostras_afetadas?: number
+    total?: number
+    juntas_afetadas?: number
+    extensao_total_m?: number | null
+    por_severidade?: Record<string, number>
+    extensao_observacao?: string
+  }
+  itens: IcpLaudoItem[]
+}
+
+export interface IcpLaudoResumoTrecho {
+  icp?: number
+  valor?: number
+  conceito?: string
+  metodo?: string
+  N?: number
+  n_amostras?: number
+  desvio_padrao?: number | null
+  e?: number | null
+  n_minimo?: number | null
+}
+
+export interface IcpLaudo {
+  norma: string
+  gerado_em: string
+  metadados: {
+    rodovia: string | null
+    km_inicio: number | null
+    km_fim: number | null
+    faixas: string[]
+    datas: string[]
+    operadores: string[]
+    norma: string
+    limite_icp_critico: number
+  }
+  resumo_trecho: IcpLaudoResumoTrecho
+  total_amostras: number
+  amostras_em_branco: string[]
+  distribuicao_conceitos: IcpLaudoDistribuicao[]
+  amostras: IcpLaudoAmostra[]
+  defeitos: IcpLaudoItem[]
+  amostras_criticas: IcpLaudoAmostra[]
+  limite_icp_critico: number
+  secoes: {
+    juntas_selante: IcpLaudoSecao
+    defeitos_atipicos: IcpLaudoSecao
+    assentamentos: IcpLaudoSecao
+    buracos: IcpLaudoSecao
+  }
+}

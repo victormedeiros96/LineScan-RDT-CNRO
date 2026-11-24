@@ -13,6 +13,7 @@ import type {
   IcpMarcacao,
   IcpMarcacoesResponse,
   IcpMarcacaoMutacaoResponse,
+  IcpLaudo,
 } from '../types'
 
 const api = axios.create({
@@ -388,8 +389,19 @@ export async function removerMarcacaoIcp(
   return data
 }
 
+export async function obterLaudoIcp(viagemNome: string): Promise<IcpLaudo> {
+  const { data } = await api.get<IcpLaudo>(
+    `/relatorios/icp/${encodeURIComponent(viagemNome)}/laudo`,
+  )
+  return data
+}
+
 export function getIcpExportUrl(viagemNome: string): string {
   return `/api/relatorios/icp/${encodeURIComponent(viagemNome)}/exportar`
+}
+
+export function getIcpLaudoCsvUrl(viagemNome: string): string {
+  return `/api/relatorios/icp/${encodeURIComponent(viagemNome)}/laudo.csv`
 }
 
 export async function listarFaixas(viagemNome: string): Promise<FaixaInfo[]> {

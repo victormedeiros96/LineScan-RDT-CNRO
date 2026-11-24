@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
 from fastapi.responses import FileResponse
@@ -12,6 +13,7 @@ from src.core.config import Settings
 from src.core.dependencies import get_settings_dep
 from src.services import (
     icp_juntas,
+    icp_laudo,
     icp_marcacoes,
     icp_placas,
     icp_trecho,
@@ -818,6 +820,256 @@ async def listar_amostras_icp(
         "trecho": inventario.get("trecho"),
         "amostras": inventario.get("amostras", []),
     }
+
+
+def _montar_laudo_icp(base: Path) -> dict:
+    """Carrega resultados + inventário e monta o laudo do item 5.5."""
+    resultados = resultado_store.carregar_resultados(base.name, "icp")
+    if resultados is None:
+        raise HTTPException(503, "Banco de dados indisponível")
+    if not resultados:
+        raise HTTPException(404, "Nenhum resultado de ICP para esta viagem.")
+    inventario = icp_placas.carregar_inventario(base)
+    try:
+        return icp_laudo.montar_laudo(
+            resultados,
+            larguras=icp_laudo.larguras_por_amostra(inventario),
+        )
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@router.get("/icp/{viagem_nome}/laudo")
+async def obter_laudo_icp(
+    viagem_nome: str,
+    settings: Settings = Depends(get_settings_dep),
+):
+    """Laudo estruturado do ICP (DNIT 062/2004-PRO, item 5.5).
+
+    Seções: resumo do trecho, distribuição por conceito, resumo por amostra,
+    juntas/selante, defeitos atípicos, assentamentos, buracos e amostras com
+    ICP ≤ 40.
+    """
+    base = _resolver_viagem(settings, viagem_nome)
+    if base is None:
+        raise HTTPException(404, f"Viagem não encontrada: {viagem_nome}")
+    return _montar_laudo_icp(base)
+
+
+def _escrever_secao(
+    writer: Any,
+    titulo: str,
+    cabecalho: list[str],
+    linhas: list[list[Any]],
+) -> None:
+    writer.writerow([])
+    writer.writerow([titulo])
+    writer.writerow(cabecalho)
+    if not linhas:
+        writer.writerow(["— sem registros —"])
+        return
+    writer.writerows(linhas)
+
+
+@router.get("/icp/{viagem_nome}/laudo.csv")
+async def exportar_laudo_icp_csv(
+    viagem_nome: str,
+    settings: Settings = Depends(get_settings_dep),
+):
+    """Laudo do ICP em CSV com as seções do item 5.5 (abre em planilha)."""
+    import csv
+    import io
+
+    base = _resolver_viagem(settings, viagem_nome)
+    if base is None:
+        raise HTTPException(404, f"Viagem não encontrada: {viagem_nome}")
+    laudo = _montar_laudo_icp(base)
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    meta = laudo["metadados"]
+    writer.writerow([f"LAUDO ICP — {laudo['norma']}"])
+    writer.writerow(["Rodovia", meta.get("rodovia")])
+    writer.writerow(["KM inicial", meta.get("km_inicio")])
+    writer.writerow(["KM final", meta.get("km_fim")])
+    writer.writerow(["Faixas", ", ".join(str(f) for f in meta.get("faixas") or [])])
+    writer.writerow(["Datas", ", ".join(str(d) for d in meta.get("datas") or [])])
+    writer.writerow(
+        ["Operadores", ", ".join(str(o) for o in meta.get("operadores") or [])]
+    )
+    writer.writerow(["Norma", meta.get("norma")])
+    writer.writerow(["Gerado em", laudo.get("gerado_em")])
+
+    trecho = laudo["resumo_trecho"]
+    _escrever_secao(
+        writer,
+        "RESUMO DO TRECHO",
+        ["CAMPO", "VALOR"],
+        [
+            ["ICP do trecho", trecho.get("icp", trecho.get("valor"))],
+            ["Conceito", trecho.get("conceito")],
+            ["Método", trecho.get("metodo")],
+            ["N (amostras do trecho)", trecho.get("N")],
+            ["Desvio padrão (S)", trecho.get("desvio_padrao")],
+            ["Erro admitido (e)", trecho.get("e")],
+            ["N mínimo (n)", trecho.get("n_minimo")],
+        ],
+    )
+
+    _escrever_secao(
+        writer,
+        "RESUMO POR AMOSTRA",
+        [
+            "AMOSTRA",
+            "RODOVIA",
+            "KM_INICIAL",
+            "KM_FINAL",
+            "FAIXA",
+            "TOTAL_PLACAS",
+            "VDT",
+            "Q",
+            "VDC",
+            "ICP",
+            "CONCEITO",
+            "EM_BRANCO",
+            "ICP_MENOR_OU_IGUAL_40",
+        ],
+        [
+            [
+                item["amostra"],
+                item["rodovia"],
+                item["km_inicial"],
+                item["km_final"],
+                item["faixa"],
+                item["total_placas"],
+                item["vdt"],
+                item["q"],
+                item["vdc"],
+                item["icp"],
+                item["conceito"],
+                "sim" if item["em_branco"] else "não",
+                "sim" if item["critico"] else "não",
+            ]
+            for item in laudo["amostras"]
+        ],
+    )
+
+    _escrever_secao(
+        writer,
+        "DEFEITOS (UMA LINHA POR DEFEITO)",
+        [
+            "AMOSTRA",
+            "KM_INICIAL",
+            "FAIXA",
+            "TIPO",
+            "DEFEITO",
+            "SEVERIDADE",
+            "DENSIDADE_PCT",
+            "PLACAS_AFETADAS",
+            "VD",
+            "ICP_MENOR_OU_IGUAL_40",
+        ],
+        [
+            [
+                item["amostra"],
+                item["km_inicial"],
+                item["faixa"],
+                item["tipo"],
+                item["nome"],
+                item["severidade"],
+                item.get("densidade"),
+                item.get("placas_afetadas"),
+                item.get("vd"),
+                "sim" if item["critico"] else "não",
+            ]
+            for item in laudo["defeitos"]
+        ],
+    )
+
+    _escrever_secao(
+        writer,
+        "JUNTAS E SELANTE (DEFEITO 5)",
+        [
+            "AMOSTRA",
+            "KM_INICIAL",
+            "FAIXA",
+            "SEVERIDADE",
+            "JUNTAS_AFETADAS",
+            "DENSIDADE_PCT",
+            "EXTENSAO_M",
+            "VD",
+        ],
+        [
+            [
+                item["amostra"],
+                item["km_inicial"],
+                item["faixa"],
+                item["severidade"],
+                item.get("juntas_afetadas"),
+                item.get("densidade"),
+                item.get("extensao_m"),
+                item.get("vd"),
+            ]
+            for item in laudo["secoes"]["juntas_selante"]["itens"]
+        ],
+    )
+
+    for chave, titulo in (
+        ("defeitos_atipicos", "DEFEITOS ATÍPICOS"),
+        ("assentamentos", "ASSENTAMENTOS"),
+        ("buracos", "BURACOS"),
+    ):
+        _escrever_secao(
+            writer,
+            titulo,
+            ["AMOSTRA", "KM_INICIAL", "FAIXA", "TIPO", "DESCRIÇÃO", "SEVERIDADE"],
+            [
+                [
+                    item["amostra"],
+                    item["km_inicial"],
+                    item["faixa"],
+                    item.get("tipo"),
+                    item.get("nome"),
+                    item.get("severidade"),
+                ]
+                for item in laudo["secoes"][chave]["itens"]
+            ],
+        )
+
+    _escrever_secao(
+        writer,
+        "AMOSTRAS COM ICP <= 40",
+        ["AMOSTRA", "KM_INICIAL", "FAIXA", "ICP", "CONCEITO"],
+        [
+            [item["amostra"], item["km_inicial"], item["faixa"], item["icp"], item["conceito"]]
+            for item in laudo["amostras_criticas"]
+        ],
+    )
+
+    _escrever_secao(
+        writer,
+        "DISTRIBUIÇÃO POR CONCEITO",
+        ["CONCEITO", "QUANTIDADE", "PERCENTUAL", "ICP_MIN", "ICP_MAX"],
+        [
+            [
+                item["conceito"],
+                item["quantidade"],
+                item["percentual"],
+                item["icp_min"],
+                item["icp_max"],
+            ]
+            for item in laudo["distribuicao_conceitos"]
+        ],
+    )
+
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f"attachment; filename=laudo_icp_{base.name}.csv",
+            "Content-Type": "text/csv; charset=utf-8",
+        },
+    )
 
 
 @router.get("/icp/{viagem_nome}/exportar")

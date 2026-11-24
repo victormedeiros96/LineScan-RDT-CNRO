@@ -2618,3 +2618,43 @@ html.light body {
     max-height: 260px;
   }
 }
+
+.icp-laudo-card {
+  margin-bottom: 1rem;
+}
+
+.icp-laudo-resumo,
+.icp-laudo-distribuicao,
+.icp-laudo-filtros {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0.35rem 0 0.8rem;
+  font-size: 0.8rem;
+}
+
+.icp-laudo-abas {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.icp-laudo-abas .btn-sm.ativo {
+  background: var(--primary);
+  color: #fff;
+  border-color: var(--primary);
+}
+
+.icp-laudo-check {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-left: auto;
+  color: var(--text-muted);
+}
+
+.icp-linha-critica > td {
+  background: rgba(239, 68, 68, 0.12);
+  font-weight: 600;
+}
