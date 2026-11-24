@@ -861,9 +861,11 @@ Configuração em `modelos/icp/config.json`, bloco `"juntas"`:
 `Settings` também aceita `ICP_NUCLIO_DIR`, `ICP_MODELO_PT`, `ICP_LIMIAR_JUNTAS`,
 `ICP_ORDEM_INVERTIDA` e `ICP_MM_POR_PX_Y`. A configuração/blocos/faixas são
 persistidos no banco **antes** da etapa de placas. Se faltar modelo, calibração
-ou imagens, o job do rígido conclui com **aviso explícito** (`placas_geradas =
-false` e `avisos` no resultado, exibido em **Processamentos**) em vez de
-"sucesso silencioso"; a concatenação já produzida não é perdida.
+ou imagens, ou se a detecção falhar por qualquer erro inesperado (por exemplo
+uma dependência ausente no deploy, como `skimage`), o job do rígido conclui com
+**aviso explícito** (`placas_geradas = false` e `avisos` no resultado, exibido em
+**Processamentos**) em vez de "sucesso silencioso" ou de falhar o job inteiro; a
+concatenação já produzida não é perdida e o `logger.warning` registra a causa.
 
 O resultado do job guarda a calibração e um resumo estruturado do inventário
 (`inventario_resumo`: trecho e amostras) no banco; o inventário completo
