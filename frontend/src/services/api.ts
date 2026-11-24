@@ -10,6 +10,9 @@ import type {
   IcpInventario,
   IcpPlaca,
   IcpAmostra,
+  IcpMarcacao,
+  IcpMarcacoesResponse,
+  IcpMarcacaoMutacaoResponse,
 } from '../types'
 
 const api = axios.create({
@@ -343,6 +346,46 @@ export async function obterPlacaIcp(
 
 export function getIcpRecorteUrl(viagemNome: string, placaId: string): string {
   return `/api/relatorios/icp/${encodeURIComponent(viagemNome)}/placas/${encodeURIComponent(placaId)}/recorte`
+}
+
+export interface CriarMarcacaoIcpPayload {
+  placa_id: string
+  tipo: number
+  severidade: string
+  geometria?: Record<string, unknown>
+  autor?: string
+}
+
+export async function listarMarcacoesIcp(
+  viagemNome: string,
+  amostra?: string,
+): Promise<IcpMarcacao[]> {
+  const { data } = await api.get<IcpMarcacoesResponse>(
+    `/relatorios/icp/${encodeURIComponent(viagemNome)}/marcacoes`,
+    { params: amostra ? { amostra } : undefined },
+  )
+  return data.marcacoes ?? []
+}
+
+export async function criarMarcacaoIcp(
+  viagemNome: string,
+  payload: CriarMarcacaoIcpPayload,
+): Promise<IcpMarcacaoMutacaoResponse> {
+  const { data } = await api.post(
+    `/relatorios/icp/${encodeURIComponent(viagemNome)}/marcacoes`,
+    payload,
+  )
+  return data
+}
+
+export async function removerMarcacaoIcp(
+  viagemNome: string,
+  marcacaoId: string,
+): Promise<IcpMarcacaoMutacaoResponse> {
+  const { data } = await api.delete(
+    `/relatorios/icp/${encodeURIComponent(viagemNome)}/marcacoes/${encodeURIComponent(marcacaoId)}`,
+  )
+  return data
 }
 
 export function getIcpExportUrl(viagemNome: string): string {
