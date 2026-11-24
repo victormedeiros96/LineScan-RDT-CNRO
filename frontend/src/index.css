@@ -2560,6 +2560,51 @@ html.light body {
   margin-top: 0.4rem;
 }
 
+.icp-marcacoes {
+  margin: 0.6rem 0;
+  padding-top: 0.5rem;
+  border-top: 1px dashed var(--border-color);
+}
+
+.icp-marcacoes h5 {
+  margin: 0 0 0.35rem;
+  font-size: 0.78rem;
+}
+
+.icp-marcacoes ul {
+  list-style: none;
+  margin: 0 0 0.5rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.icp-marcacoes li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  font-size: 0.72rem;
+}
+
+.icp-marcacao-form {
+  display: flex;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+}
+
+.icp-marcacao-form select {
+  flex: 1 1 90px;
+  min-width: 80px;
+}
+
+.icp-composicao {
+  margin: 0.4rem 0 0;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+}
+
 @media (max-width: 900px) {
   .icp-resumo-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));

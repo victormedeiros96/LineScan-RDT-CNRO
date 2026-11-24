@@ -693,6 +693,32 @@ validado contra o diretório da viagem (sem path traversal, 400 quando inválido
 painel lateral: clicar numa placa abre o recorte ampliado com KM, amostra,
 comprimento/largura e botões anterior/próxima; placa sem ROI mostra aviso.
 
+### Marcação manual de patologias no ICP (RDT1-23)
+
+Além da ficha importada, o operador pode marcar defeitos do Anexo A **por
+placa** no painel da tela do ICP (`icp_marcacoes.py`):
+
+* a marcação guarda placa, amostra, KM, faixa, tipo (1–18), severidade (B/M/A),
+  geometria opcional, autor/data e `ativo` (remoção é *soft delete*);
+* a densidade na amostra é `placas_afetadas / total_placas`, contando **placas
+  distintas**; a mesma placa não pode repetir o mesmo tipo/severidade (409);
+* o cálculo é sempre refeito a partir de `defeitos_ficha` **somado** às
+  marcações ativas, então reimportar a ficha não apaga nem duplica a edição
+  manual; cada defeito no resultado expõe `placas_afetadas_ficha` e
+  `placas_afetadas_manual`, e `composicao` resume as duas origens;
+* as marcações vivem em `dados/<viagem>/icp_marcacoes.json` (fonte para a
+  edição, funciona sem banco) e são espelhadas no `detalhe` do resultado
+  persistido; o recálculo usa `calcular_icp_amostra` e é persistido
+  best-effort em `resultado_analise`.
+
+API: `GET/POST /api/relatorios/icp/{viagem}/marcacoes`,
+`PATCH/DELETE .../marcacoes/{id}`. Validações: tipo/severidade inválidos (400),
+placa/amostra sem placas (400/404), duplicidade (409).
+
+Decisões (registradas no card): marcação por placa individual agregada na
+amostra; edição manual **adicional** à ficha; autor/data em cada marcação sem
+fluxo de aprovação. Regressão em `backend/tests/test_icp_marcacoes.py`.
+
 Validação BR-364 (rede periódica): 120 m com período de **5,12 m** gera 23
 placas; com **4,10 m** gera 29 placas (`backend/tests/test_icp_placas.py`). A
 validação por juntas cobre vãos variáveis na mesma viagem (5,12 / 5,10 / 4,78 /
@@ -830,6 +856,10 @@ exportar o laudo.
   comprimento/largura e navegação anterior/próxima dentro da amostra
   (`GET .../placas/{id}` e `GET .../placas/{id}/recorte`, RDT1-24). Placa sem
   recorte exibe aviso em vez da imagem.
+* **Editor manual** — no detalhe da placa, escolher tipo (1–18) e severidade
+  (B/M/A), marcar/remover patologias e ver o ICP da amostra recalculado na hora
+  (`/marcacoes`, RDT1-23). O resumo mostra a composição (defeitos da ficha ×
+  marcações manuais).
 * **Exportar laudo** — `GET /api/relatorios/icp/{viagem}/exportar` devolve um
   CSV com uma linha por defeito (amostra, metadados, tipo/defeito, severidade,
   densidade, placas afetadas, VD) e as colunas de resumo (VDT, q, VDC, ICP,
@@ -866,7 +896,8 @@ host. Restaure com backend/worker parados para não haver conexões abertas dura
   gera faixas contínuas, juntas e placas (RDT1-22). A ficha de inspeção continua
   sendo importada separadamente (`icp_import.py` / `POST /api/relatorios/icp/{viagem}`)
   e a UI (`IcpView`, RDT1-19) cobre importar → resultado → overlay → exportar.
-  Ainda falta: edição manual das patologias na imagem (#23), cálculo por trecho
+  A edição manual das patologias por placa está em RDT1-23 (`icp_marcacoes.py`
+  + painel na `IcpView`). Ainda falta: cálculo por trecho
   (#25), laudo completo (#26) e definir o ICP do **flexível**, que segue em
   aberto. O modelo de **patologias** do rígido (além das juntas) também fica
   para depois. A ETL dos jobs/resultados

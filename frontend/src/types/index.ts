@@ -145,6 +145,14 @@ export interface IcpDefeito {
   densidade: number
   vd: number
   placas_afetadas?: number | null
+  placas_afetadas_ficha?: number
+  placas_afetadas_manual?: number
+}
+
+export interface IcpComposicao {
+  defeitos_ficha: number
+  marcacoes_manuais: number
+  total_placas: number
 }
 
 export interface IcpResultado {
@@ -168,6 +176,7 @@ export interface IcpResultado {
   conceito: string
   norma: string
   valor?: number
+  composicao?: IcpComposicao | null
 }
 
 export interface IcpImportResponse {
@@ -221,6 +230,38 @@ export interface IcpInventario {
   amostras: IcpAmostra[]
   placas: IcpPlaca[]
   descartadas: unknown[]
+}
+
+export interface IcpMarcacao {
+  id: string
+  viagem: string
+  amostra: string
+  placa_id: string
+  km: number | null
+  faixa: string | null
+  tipo: number
+  severidade: string
+  placas_afetadas: number
+  geometria: Record<string, unknown> | null
+  origem: string
+  ativo: boolean
+  criado_por: string | null
+  criado_em: string
+  atualizado_por: string | null
+  atualizado_em: string | null
+  removido_por: string | null
+  removido_em: string | null
+}
+
+export interface IcpMarcacoesResponse {
+  viagem: string
+  marcacoes: IcpMarcacao[]
+}
+
+export interface IcpMarcacaoMutacaoResponse extends IcpMarcacoesResponse {
+  status: string
+  marcacao: IcpMarcacao
+  resultado: IcpResultado
 }
 
 export interface IcpPlacasResponse {

@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 from src.api.routes_folders import _resolver_viagem
 from src.core.config import Settings
 from src.core.dependencies import get_settings_dep
-from src.services import icp_juntas, icp_placas, resultado_store
+from src.services import icp_juntas, icp_marcacoes, icp_placas, resultado_store
 from src.services.icp_import import NORMA_ICP, importar_icp
 from src.services.igg_calculator import (
     calcular_igg_por_km,
@@ -203,12 +203,24 @@ async def importar_icp_endpoint(
         reconciliar=True,
     )
 
+    # Reimportar a ficha não pode apagar as marcações manuais: recalcula as
+    # amostras que têm edição manual (RDT1-23).
+    totais = {
+        str(item["amostra"]): float(item.get("total_placas") or 0)
+        for item in resultados
+        if item.get("amostra")
+    }
+    reaplicadas = icp_marcacoes.reaplicar_apos_importacao(
+        base, base.name, totais
+    )
+
     return {
         "status": "ok",
         "viagem": base.name,
         "arquivo": nome_arquivo,
         "total_amostras": len(resultados),
         "persistidos": persistidos,
+        "amostras_com_marcacoes_recalculadas": reaplicadas,
         "resultados": resultados,
     }
 
@@ -495,6 +507,194 @@ async def obter_recorte_placa_icp(
             404, f"Recorte da placa {placa_id} não encontrado em disco."
         )
     return FileResponse(caminho, media_type=_MEDIA_TYPE_RECORTE[sufixo])
+
+
+def _total_placas_amostra(
+    viagem_nome: str, inventario: dict, amostra_id: str
+) -> float:
+    """Total de placas da amostra: prioriza o resultado importado da ficha."""
+    resultados = resultado_store.carregar_resultados(viagem_nome, "icp") or []
+    for resultado in resultados:
+        if resultado.get("amostra") == amostra_id:
+            total = float(resultado.get("total_placas") or 0)
+            if total > 0:
+                return total
+    amostra = next(
+        (item for item in inventario.get("amostras", []) if item.get("id") == amostra_id),
+        None,
+    )
+    return float((amostra or {}).get("n_placas") or 0)
+
+
+def _resolver_placa_e_total(
+    settings: Settings, viagem_nome: str, placa_id: str
+) -> tuple[Path, dict, str, float]:
+    base = _resolver_viagem(settings, viagem_nome)
+    if base is None:
+        raise HTTPException(404, f"Viagem não encontrada: {viagem_nome}")
+    inventario = icp_placas.carregar_inventario(base)
+    if inventario is None:
+        raise HTTPException(
+            404, "Inventário de placas não gerado para esta viagem."
+        )
+    placa = _localizar_placa(inventario, placa_id)
+    if placa is None:
+        raise HTTPException(404, f"Placa não encontrada: {placa_id}")
+    amostra_id = str(placa.get("amostra_id") or "")
+    if not amostra_id:
+        raise HTTPException(400, f"A placa {placa_id} não pertence a uma amostra.")
+    total = _total_placas_amostra(base.name, inventario, amostra_id)
+    if total <= 0:
+        raise HTTPException(
+            400, f"A amostra {amostra_id} não tem placas para calcular o ICP."
+        )
+    return base, placa, amostra_id, total
+
+
+def _total_da_marcacao(
+    settings: Settings, viagem_nome: str, marcacao: dict
+) -> tuple[Path, float]:
+    base = _resolver_viagem(settings, viagem_nome)
+    if base is None:
+        raise HTTPException(404, f"Viagem não encontrada: {viagem_nome}")
+    inventario = icp_placas.carregar_inventario(base)
+    if inventario is None:
+        raise HTTPException(
+            404, "Inventário de placas não gerado para esta viagem."
+        )
+    amostra_id = str(marcacao.get("amostra") or "")
+    total = _total_placas_amostra(base.name, inventario, amostra_id)
+    if total <= 0:
+        raise HTTPException(
+            400, f"A amostra {amostra_id} não tem placas para calcular o ICP."
+        )
+    return base, total
+
+
+@router.get("/icp/{viagem_nome}/marcacoes")
+async def listar_marcacoes_icp(
+    viagem_nome: str,
+    amostra: str | None = None,
+    incluir_removidas: bool = False,
+    settings: Settings = Depends(get_settings_dep),
+):
+    """Marcações manuais de patologias do ICP (RDT1-23)."""
+    base = _resolver_viagem(settings, viagem_nome)
+    if base is None:
+        raise HTTPException(404, f"Viagem não encontrada: {viagem_nome}")
+    return {
+        "viagem": base.name,
+        "marcacoes": icp_marcacoes.listar(
+            base, amostra, incluir_removidas=incluir_removidas
+        ),
+    }
+
+
+@router.post("/icp/{viagem_nome}/marcacoes")
+async def criar_marcacao_icp(
+    viagem_nome: str,
+    body: dict,
+    settings: Settings = Depends(get_settings_dep),
+):
+    """Marca um defeito numa placa e recalcula a amostra (ficha + manual)."""
+    placa_id = str(body.get("placa_id") or "").strip()
+    if not placa_id:
+        raise HTTPException(400, "Informe 'placa_id'.")
+    base, placa, amostra_id, total = _resolver_placa_e_total(
+        settings, viagem_nome, placa_id
+    )
+    try:
+        marcacao, resultado = icp_marcacoes.adicionar(
+            base,
+            base.name,
+            placa_id=placa_id,
+            amostra=amostra_id,
+            total_placas=total,
+            tipo=body.get("tipo"),
+            severidade=body.get("severidade", ""),
+            km=placa.get("km"),
+            faixa=placa.get("faixa"),
+            geometria=body.get("geometria"),
+            autor=body.get("autor"),
+        )
+    except PermissionError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {
+        "status": "ok",
+        "marcacao": marcacao,
+        "resultado": resultado,
+        "marcacoes": icp_marcacoes.listar(base, amostra_id),
+    }
+
+
+@router.patch("/icp/{viagem_nome}/marcacoes/{marcacao_id}")
+async def atualizar_marcacao_icp(
+    viagem_nome: str,
+    marcacao_id: str,
+    body: dict,
+    settings: Settings = Depends(get_settings_dep),
+):
+    """Edita tipo/severidade/geometria de uma marcação e recalcula a amostra."""
+    base = _resolver_viagem(settings, viagem_nome)
+    if base is None:
+        raise HTTPException(404, f"Viagem não encontrada: {viagem_nome}")
+    alvo = icp_marcacoes.obter(base, marcacao_id)
+    if alvo is None:
+        raise HTTPException(404, f"Marcação não encontrada: {marcacao_id}")
+    base, total = _total_da_marcacao(settings, viagem_nome, alvo)
+    try:
+        marcacao, resultado = icp_marcacoes.atualizar(
+            base,
+            base.name,
+            marcacao_id,
+            tipo=body.get("tipo"),
+            severidade=body.get("severidade"),
+            geometria=body.get("geometria"),
+            autor=body.get("autor"),
+            total_placas=total,
+        )
+    except PermissionError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {
+        "status": "ok",
+        "marcacao": marcacao,
+        "resultado": resultado,
+        "marcacoes": icp_marcacoes.listar(base, str(marcacao["amostra"])),
+    }
+
+
+@router.delete("/icp/{viagem_nome}/marcacoes/{marcacao_id}")
+async def remover_marcacao_icp(
+    viagem_nome: str,
+    marcacao_id: str,
+    settings: Settings = Depends(get_settings_dep),
+):
+    """Remove (soft delete) uma marcação e recalcula a amostra."""
+    base = _resolver_viagem(settings, viagem_nome)
+    if base is None:
+        raise HTTPException(404, f"Viagem não encontrada: {viagem_nome}")
+    alvo = icp_marcacoes.obter(base, marcacao_id)
+    if alvo is None:
+        raise HTTPException(404, f"Marcação não encontrada: {marcacao_id}")
+    base, total = _total_da_marcacao(settings, viagem_nome, alvo)
+    try:
+        marcacao, resultado = icp_marcacoes.remover(
+            base, base.name, marcacao_id, total_placas=total
+        )
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return {
+        "status": "ok",
+        "marcacao": marcacao,
+        "resultado": resultado,
+        "marcacoes": icp_marcacoes.listar(base, str(marcacao["amostra"])),
+    }
 
 
 @router.get("/icp/{viagem_nome}/amostras")
