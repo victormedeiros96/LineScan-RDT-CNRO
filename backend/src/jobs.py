@@ -166,12 +166,14 @@ def _processar_imagens(
         try:
             resultado.update(_processar_placas_icp(destino, settings, juntas))
             resultado["placas_geradas"] = True
-        except (RuntimeError, ValueError) as exc:
-            # Fallback explícito: sem imagens/faixas ou sem calibração o job do
+        except Exception as exc:
+            # Fallback explícito: sem imagens/faixas, sem calibração ou com
+            # dependência quebrada (ex.: ModuleNotFoundError de skimage) o job do
             # rígido não pode montar as placas, mas conclui com aviso em vez de
-            # "sucesso silencioso" (o resultado fica consultável no histórico).
+            # falhar. A concatenação já produzida continua disponível e o
+            # resultado fica consultável no histórico.
             logger.warning(
-                "ICP sem placas na viagem %s: %s", viagem_nome, exc
+                "ICP sem placas na viagem %s: %s", viagem_nome, exc, exc_info=True
             )
             resultado["placas_geradas"] = False
             resultado["avisos"] = [
