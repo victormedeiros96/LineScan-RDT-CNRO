@@ -150,3 +150,156 @@ def test_exporta_laudo_sem_resultados_retorna_404(
     resposta = _cliente(viagem).get("/api/relatorios/icp/Viagem ICP/exportar")
 
     assert resposta.status_code == 404
+
+
+def test_calcula_e_persiste_icp_do_trecho(
+    viagem: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    itens = [
+        {"km": 33, "amostra": "ICP_1", "tipo_analise": "icp", "icp": 80.0},
+        {"km": 33, "amostra": "ICP_2", "tipo_analise": "icp", "icp": 60.0},
+        {"km": 34, "amostra": "ICP_3", "tipo_analise": "icp", "icp": 40.0},
+    ]
+    monkeypatch.setattr(
+        resultado_store, "carregar_resultados", lambda *_args, **_kwargs: itens
+    )
+    salvo: list[dict] = []
+    monkeypatch.setattr(
+        resultado_store,
+        "persistir_resultados",
+        lambda **kwargs: salvo.append(kwargs) or 1,
+    )
+
+    resposta = _cliente(viagem).post(
+        "/api/relatorios/icp/Viagem ICP/trecho",
+        json={"metodo": "total", "e": 5},
+    )
+
+    assert resposta.status_code == 200
+    trecho = resposta.json()["trecho"]
+    assert trecho["icp"] == pytest.approx(60.0)
+    assert trecho["conceito"] == "Bom"
+    assert trecho["N"] == 3
+    assert trecho["n_minimo"] == 3
+    assert len(salvo) == 1
+    assert salvo[0]["tipo_analise"] == "icp"
+    persistido = salvo[0]["resultados"][0]
+    assert persistido["km"] == 0
+    assert persistido["nivel"] == "trecho"
+    assert persistido["icp"] == pytest.approx(60.0)
+
+
+def test_trecho_com_e_invalido_retorna_400(
+    viagem: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    itens = [{"km": 33, "amostra": "ICP_1", "tipo_analise": "icp", "icp": 80.0}]
+    monkeypatch.setattr(
+        resultado_store, "carregar_resultados", lambda *_args, **_kwargs: itens
+    )
+
+    resposta = _cliente(viagem).post(
+        "/api/relatorios/icp/Viagem ICP/trecho", json={"e": 0}
+    )
+
+    assert resposta.status_code == 400
+
+
+def test_trecho_sem_amostras_retorna_404(
+    viagem: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        resultado_store, "carregar_resultados", lambda *_args, **_kwargs: []
+    )
+
+    resposta = _cliente(viagem).post(
+        "/api/relatorios/icp/Viagem ICP/trecho", json={}
+    )
+
+    assert resposta.status_code == 404
+
+
+def test_get_trecho_persistido_e_separa_das_amostras(
+    viagem: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    trecho = {
+        "km": 0,
+        "amostra": None,
+        "tipo_analise": "icp",
+        "nivel": "trecho",
+        "valor": 64.0,
+        "icp": 64.0,
+        "conceito": "Bom",
+        "N": 10,
+        "n_minimo": 6,
+    }
+    amostra = {
+        "km": 33,
+        "amostra": "ICP_1",
+        "tipo_analise": "icp",
+        "valor": 80.0,
+    }
+    monkeypatch.setattr(
+        resultado_store,
+        "carregar_resultados",
+        lambda *_args, **_kwargs: [trecho, amostra],
+    )
+
+    cliente = _cliente(viagem)
+    consulta = cliente.get("/api/relatorios/icp/Viagem ICP/trecho")
+    amostras = cliente.get("/api/relatorios/icp/Viagem ICP")
+
+    assert consulta.status_code == 200
+    assert consulta.json()["icp"] == 64.0
+    assert consulta.json()["n_minimo"] == 6
+    assert amostras.status_code == 200
+    assert [item["amostra"] for item in amostras.json()] == ["ICP_1"]
+
+
+def test_get_trecho_inexistente_retorna_404(
+    viagem: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        resultado_store, "carregar_resultados", lambda *_args, **_kwargs: []
+    )
+
+    resposta = _cliente(viagem).get("/api/relatorios/icp/Viagem ICP/trecho")
+    assert resposta.status_code == 404
+
+
+def test_exporta_trecho_no_csv(viagem: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    itens = [
+        {
+            "km": 33,
+            "amostra": "ICP_1",
+            "tipo_analise": "icp",
+            "valor": 80.0,
+            "conceito": "Muito Bom",
+            "defeitos": [],
+        },
+        {
+            "km": 0,
+            "amostra": None,
+            "tipo_analise": "icp",
+            "nivel": "trecho",
+            "valor": 64.0,
+            "icp": 64.0,
+            "conceito": "Bom",
+            "N": 10,
+            "n_minimo": 6,
+            "desvio_padrao": 12.5,
+            "e": 5.0,
+            "metodo": "amostragem_adicional",
+        },
+    ]
+    monkeypatch.setattr(
+        resultado_store, "carregar_resultados", lambda *_args, **_kwargs: itens
+    )
+
+    resposta = _cliente(viagem).get("/api/relatorios/icp/Viagem ICP/exportar")
+
+    assert resposta.status_code == 200
+    linhas = resposta.text.strip().splitlines()
+    assert "N_MINIMO" in linhas[0]
+    assert "METODO" in linhas[0]
+    assert "TRECHO" in linhas[-1]
+    assert "amostragem_adicional" in linhas[-1]

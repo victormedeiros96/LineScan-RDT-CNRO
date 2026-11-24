@@ -103,6 +103,7 @@ soft delete e/ou restore do backup (ver abaixo).
 | `icp_calculator.py` | Cálculo do ICP de pavimento rígido (método da concessionária) |
 | `icp_curvas.py` | Curvas e correções do ICP geradas das planilhas ICP Pedágio |
 | `icp_import.py` | Importação das fichas de inspeção ICP (XLSX/CSV) e cálculo por amostra (RDT1-17) |
+| `icp_trecho.py` | ICP do trecho por inspeção total/amostragem e recálculo de `n` (RDT1-25) |
 | `planilha_import.py` | Importação da planilha de afundamento das trilhas de roda (TRI/TRE) |
 | `routes_folders.py` | API principal (trabalhos, análise, uploads) |
 | `routes_reports.py` | Relatórios e exportação |
@@ -252,6 +253,59 @@ persistência é *best-effort* (o `GET` responde 503).
 
 Regressão: `backend/tests/test_icp_import.py` remonta as planilhas da fixture e
 confere **108/108 ICPs**; `test_api_icp.py` cobre upload, cálculo e `GET`.
+
+### Cálculo do ICP do trecho (RDT1-25)
+
+O nível do trecho fica em `backend/src/services/icp_trecho.py`
+(`calcular_icp_trecho`) e segue a **DNIT 062/2004-PRO**, itens 6 e 7.3:
+
+* **inspeção total** (item 7.3.1) — `ICPt` = média aritmética dos ICPs das
+  amostras; é o padrão, porque a RDT1-21 processa o trecho em contínuo;
+* **amostragem sem adicionais** (item 7.3.2) — mesma média aritmética;
+* **amostragem com amostras adicionais** (item 7.3.3) —
+  `ICPt = ((N − A) / N)·ICP1 + (A / N)·ICP2`, com `ICP1` a média das amostras
+  normais, `ICP2` a média das adicionais, `N` o total de amostras do trecho e
+  `A` a quantidade de adicionais;
+* **número mínimo de amostras** (item 6) —
+  `n = (4·N·S²) / (e²·(N − 1) + 4·S²)`, com `S` o desvio padrão **amostral**
+  dos ICPs (`n − 1` no denominador) e `e` o erro admissível informado.
+
+Decisões (card RDT1-25):
+
+* `e` **não tem valor padrão** — a norma não fixa um. Sem `e`, o ICPt e `S`
+  são calculados e `n` fica indisponível (`n_disponivel = false`); com `e`, ele
+  precisa ser finito e maior que zero. `n` é arredondado para cima e nunca é
+  menor que 1 (se `S = 0` a fórmula zera, mas o trecho já tem amostras).
+* `N` deriva do inventário/persistência: é a quantidade de amostras com ICP. O
+  parâmetro pode ser repetido na chamada apenas para conferência.
+* A estratégia de adicionais é explícita: o operador informa os ids das
+  amostras adicionais (`adicionais`); é preciso haver ao menos uma normal e uma
+  adicional.
+* O conceito usa o Anexo B na mesma tabela do cálculo por amostra
+  (`classificar_icp`), sem nova faixa.
+* Amostra em branco/sem defeitos continua chegando com `ICP = 100` (VDT 0) e
+  entra normalmente na média.
+
+A consolidação lê as amostras **persistidas** — ficha importada mais as
+marcações manuais já recalculadas por `icp_marcacoes` — para manter uma única
+base. A API fica em `POST /api/relatorios/icp/{viagem}/trecho`, com corpo
+`{ "metodo", "adicionais", "N", "e" }`; a resposta é
+`{ status, viagem, persistido, trecho }`. O resultado também é consultável em
+`GET /api/relatorios/icp/{viagem}/trecho`.
+
+Persistência: o trecho usa `resultado_analise` com `amostra IS NULL` e o KM
+sentinela 0 (`detalhe.nivel = "trecho"` guarda `km_inicio`/`km_fim`), mantendo a
+chave única `(viagem, km, tipo_analise, amostra)` e a gravação idempotente. O
+`GET .../icp/{viagem}` lista só as amostras; reimportar a ficha reconcilia
+apenas as amostras (`amostra IS NOT NULL`), sem apagar o consolidado do trecho.
+O CSV do `GET .../icp/{viagem}/exportar` ganhou as colunas `N`, `N_MINIMO`,
+`DESVIO_PADRAO`, `E`, `METODO` e uma linha final `TRECHO`.
+
+Regressão: `backend/tests/test_icp_trecho.py` cobre o exemplo da norma
+(ICP 52,23 / Razoável), a fórmula 7.3.3, `S`/`n` conferidos à mão, os casos de
+`e` ausente/inválido e a persistência com `amostra` nula;
+`test_persistencia_jobs.py` garante que a reconciliação das amostras preserva o
+trecho.
 
 ---
 
@@ -897,8 +951,7 @@ host. Restaure com backend/worker parados para não haver conexões abertas dura
   sendo importada separadamente (`icp_import.py` / `POST /api/relatorios/icp/{viagem}`)
   e a UI (`IcpView`, RDT1-19) cobre importar → resultado → overlay → exportar.
   A edição manual das patologias por placa está em RDT1-23 (`icp_marcacoes.py`
-  + painel na `IcpView`). Ainda falta: cálculo por trecho
-  (#25), laudo completo (#26) e definir o ICP do **flexível**, que segue em
+  + painel na `IcpView`). Ainda falta: laudo completo (#26) e definir o ICP do **flexível**, que segue em
   aberto. O modelo de **patologias** do rígido (além das juntas) também fica
   para depois. A ETL dos jobs/resultados
   legados (que vivem no Redis, não em `dados/`) continua pendente; a ETL por
