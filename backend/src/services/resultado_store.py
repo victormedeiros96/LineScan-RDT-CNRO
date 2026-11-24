@@ -143,7 +143,14 @@ def persistir_resultados_em_sessao(
         gravados += 1
 
     if reconciliar:
-        repo.soft_delete_except(viagem.id, tipo_analise, ativos)
+        # O ICP do trecho usa ``amostra IS NULL`` na mesma tabela; reimportar a
+        # ficha reconcilia só as amostras, para não apagar o consolidado.
+        repo.soft_delete_except(
+            viagem.id,
+            tipo_analise,
+            ativos,
+            somente_com_amostra=(tipo_analise == "icp"),
+        )
     return gravados
 
 

@@ -10,7 +10,13 @@ from fastapi.responses import FileResponse
 from src.api.routes_folders import _resolver_viagem
 from src.core.config import Settings
 from src.core.dependencies import get_settings_dep
-from src.services import icp_juntas, icp_marcacoes, icp_placas, resultado_store
+from src.services import (
+    icp_juntas,
+    icp_marcacoes,
+    icp_placas,
+    icp_trecho,
+    resultado_store,
+)
 from src.services.icp_import import NORMA_ICP, importar_icp
 from src.services.igg_calculator import (
     calcular_igg_por_km,
@@ -231,16 +237,112 @@ async def listar_icp(
     km: int | None = None,
     settings: Settings = Depends(get_settings_dep),
 ):
-    """Resultados de ICP persistidos por amostra, opcionalmente filtrados por KM."""
+    """Resultados de ICP persistidos por amostra, opcionalmente filtrados por KM.
+
+    O consolidado do trecho fica à parte em ``GET .../icp/{viagem}/trecho`` para
+    não se misturar às amostras (média, gráfico e tabela da tela do ICP).
+    """
     base = _resolver_viagem(settings, viagem_nome)
     if base is None:
         raise HTTPException(404, f"Viagem não encontrada: {viagem_nome}")
     resultados = resultado_store.carregar_resultados(base.name, "icp")
     if resultados is None:
         raise HTTPException(503, "Banco de dados indisponível")
+    resultados = [item for item in resultados if not icp_trecho.eh_trecho(item)]
     if km is not None:
         resultados = [item for item in resultados if item.get("km") == km]
     return resultados
+
+
+@router.post("/icp/{viagem_nome}/trecho")
+async def calcular_trecho_icp(
+    viagem_nome: str,
+    body: dict,
+    settings: Settings = Depends(get_settings_dep),
+):
+    """Calcula e persiste o ICP do trecho (DNIT 062/2004-PRO, itens 6 e 7.3).
+
+    Corpo aceito:
+
+    * ``metodo`` — ``total`` (padrão), ``amostragem`` ou
+      ``amostragem_adicional``;
+    * ``adicionais`` — ids das amostras adicionais (só no último método);
+    * ``N`` — conferência do total de amostras do trecho (padrão: quantidade
+      persistida);
+    * ``e`` — erro admissível; sem ele o ICP e ``S`` são calculados, mas ``n``
+      fica indisponível (a norma não fixa ``e``).
+
+    A consolidação lê as amostras **persistidas** (ficha importada + marcações
+    manuais já recalculadas) para manter uma única base de cálculo.
+    """
+    base = _resolver_viagem(settings, viagem_nome)
+    if base is None:
+        raise HTTPException(404, f"Viagem não encontrada: {viagem_nome}")
+    resultados = resultado_store.carregar_resultados(base.name, "icp")
+    if resultados is None:
+        raise HTTPException(503, "Banco de dados indisponível")
+    amostras = [item for item in resultados if not icp_trecho.eh_trecho(item)]
+    if not amostras:
+        raise HTTPException(
+            404, "Nenhuma amostra de ICP para consolidar neste trecho."
+        )
+
+    try:
+        resultado = icp_trecho.calcular_icp_trecho(
+            amostras,
+            metodo=body.get("metodo"),
+            adicionais=body.get("adicionais"),
+            n=body.get("N"),
+            e=body.get("e"),
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    kms = [
+        float(item["km"])
+        for item in amostras
+        if isinstance(item.get("km"), (int, float))
+    ]
+    persistivel = icp_trecho.para_persistencia(
+        resultado,
+        km_inicio=min(kms) if kms else None,
+        km_fim=max(kms) if kms else None,
+    )
+    persistidos = resultado_store.persistir_resultados(
+        viagem_nome=base.name,
+        tipo_analise="icp",
+        resultados=[persistivel],
+        norma=icp_trecho.NORMA_ICP,
+        reconciliar=False,
+    )
+    return {
+        "status": "ok",
+        "viagem": base.name,
+        "persistido": persistidos is not None,
+        "trecho": resultado,
+    }
+
+
+@router.get("/icp/{viagem_nome}/trecho")
+async def obter_trecho_icp(
+    viagem_nome: str,
+    settings: Settings = Depends(get_settings_dep),
+):
+    """ICP consolidado do trecho persistido (ou 404 se ainda não calculado)."""
+    base = _resolver_viagem(settings, viagem_nome)
+    if base is None:
+        raise HTTPException(404, f"Viagem não encontrada: {viagem_nome}")
+    resultados = resultado_store.carregar_resultados(base.name, "icp")
+    if resultados is None:
+        raise HTTPException(503, "Banco de dados indisponível")
+    trecho = next(
+        (item for item in resultados if icp_trecho.eh_trecho(item)), None
+    )
+    if trecho is None:
+        raise HTTPException(
+            404, "ICP do trecho ainda não calculado para esta viagem."
+        )
+    return trecho
 
 
 @router.post("/icp/{viagem_nome}/placas")
@@ -738,6 +840,12 @@ async def exportar_icp(
         raise HTTPException(503, "Banco de dados indisponível")
     if not resultados:
         raise HTTPException(404, "Nenhum resultado de ICP para esta viagem.")
+    trecho = next(
+        (item for item in resultados if icp_trecho.eh_trecho(item)), None
+    )
+    amostras_resultados = [
+        item for item in resultados if not icp_trecho.eh_trecho(item)
+    ]
 
     output = io.StringIO()
     writer = csv.writer(output)
@@ -760,10 +868,17 @@ async def exportar_icp(
             "VDC",
             "ICP",
             "CONCEITO",
+            "N",
+            "N_MINIMO",
+            "DESVIO_PADRAO",
+            "E",
+            "METODO",
+            "NIVEL",
         ]
     )
     ordem = {"A": 3, "M": 2, "B": 1, "U": 0}
-    for item in resultados:
+    coluna_tipo = 6
+    for item in amostras_resultados:
         detalhe = item
         defeitos = item.get("defeitos") or []
         base_row = [
@@ -784,6 +899,12 @@ async def exportar_icp(
             detalhe.get("vdc"),
             item.get("valor"),
             item.get("conceito"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            "amostra",
         ]
         if not defeitos:
             writer.writerow(base_row)
@@ -794,13 +915,42 @@ async def exportar_icp(
         ):
             tipo = int(defeito.get("tipo", 0))
             linha = list(base_row)
-            linha[6] = tipo
-            linha[7] = DEFEITOS.get(tipo)
-            linha[8] = defeito.get("severidade")
-            linha[9] = defeito.get("densidade")
-            linha[10] = defeito.get("placas_afetadas")
-            linha[11] = defeito.get("vd")
+            linha[coluna_tipo] = tipo
+            linha[coluna_tipo + 1] = DEFEITOS.get(tipo)
+            linha[coluna_tipo + 2] = defeito.get("severidade")
+            linha[coluna_tipo + 3] = defeito.get("densidade")
+            linha[coluna_tipo + 4] = defeito.get("placas_afetadas")
+            linha[coluna_tipo + 5] = defeito.get("vd")
             writer.writerow(linha)
+
+    if trecho is not None:
+        writer.writerow(
+            [
+                "TRECHO",
+                None,
+                trecho.get("km_inicio"),
+                trecho.get("km_fim"),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                trecho.get("icp", trecho.get("valor")),
+                trecho.get("conceito"),
+                trecho.get("N"),
+                trecho.get("n_minimo"),
+                trecho.get("desvio_padrao"),
+                trecho.get("e"),
+                trecho.get("metodo"),
+                "trecho",
+            ]
+        )
 
     return Response(
         content=output.getvalue(),

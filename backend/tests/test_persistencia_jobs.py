@@ -276,3 +276,52 @@ def test_tipo_de_analise_invalido(session: Session) -> None:
 
 def test_viagem_fora_do_banco_retorna_none(session: Session) -> None:
     assert resultado_store.carregar_resultados("inexistente", "igg", session=session) is None
+
+
+def test_trecho_icp_sobrevive_a_reconciliacao_das_amostras(session: Session) -> None:
+    """A reconciliação do ICP é só das amostras; o trecho (amostra nula) fica."""
+    _viagem(session, "Viagem ICP Trecho")
+
+    resultado_store.persistir_resultados_em_sessao(
+        session,
+        viagem_nome="Viagem ICP Trecho",
+        tipo_analise="icp",
+        resultados=[
+            {
+                "km": 0,
+                "nivel": "trecho",
+                "icp": 64.0,
+                "conceito": "Bom",
+                "N": 10,
+                "n_minimo": 6,
+            }
+        ],
+    )
+    resultado_store.persistir_resultados_em_sessao(
+        session,
+        viagem_nome="Viagem ICP Trecho",
+        tipo_analise="icp",
+        resultados=[
+            {"km": 33, "amostra": "ICP_1", "icp": 80.0},
+            {"km": 33, "amostra": "ICP_2", "icp": 60.0},
+        ],
+    )
+    resultado_store.persistir_resultados_em_sessao(
+        session,
+        viagem_nome="Viagem ICP Trecho",
+        tipo_analise="icp",
+        resultados=[{"km": 33, "amostra": "ICP_1", "icp": 85.0}],
+    )
+
+    itens = resultado_store.carregar_resultados(
+        "Viagem ICP Trecho", "icp", session=session
+    )
+    assert itens is not None
+    trechos = [item for item in itens if item["amostra"] is None]
+    amostras = [item for item in itens if item["amostra"] is not None]
+    assert len(trechos) == 1
+    assert trechos[0]["nivel"] == "trecho"
+    assert trechos[0]["n_minimo"] == 6
+    assert [(item["amostra"], item["valor"]) for item in amostras] == [
+        ("ICP_1", 85.0)
+    ]

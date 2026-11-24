@@ -66,8 +66,15 @@ class ResultadoAnaliseRepository(BaseRepository):
         viagem_id: uuid.UUID,
         tipo_analise: str,
         manter: set[uuid.UUID],
+        *,
+        somente_com_amostra: bool = False,
     ) -> int:
-        """Marca como removidos os resultados do tipo que saíram do conjunto."""
+        """Marca como removidos os resultados do tipo que saíram do conjunto.
+
+        ``somente_com_amostra`` restringe a reconciliação às amostras (ICP com
+        ``amostra`` não nula), preservando o resultado consolidado do trecho
+        (``amostra IS NULL``).
+        """
         stmt = (
             update(ResultadoAnalise)
             .where(
@@ -77,6 +84,8 @@ class ResultadoAnaliseRepository(BaseRepository):
             )
             .values(deleted_at=func.now())
         )
+        if somente_com_amostra:
+            stmt = stmt.where(ResultadoAnalise.amostra.is_not(None))
         if manter:
             stmt = stmt.where(ResultadoAnalise.id.notin_(list(manter)))
         resultado = self.session.execute(stmt)
