@@ -303,3 +303,110 @@ def test_exporta_trecho_no_csv(viagem: Path, monkeypatch: pytest.MonkeyPatch) ->
     assert "METODO" in linhas[0]
     assert "TRECHO" in linhas[-1]
     assert "amostragem_adicional" in linhas[-1]
+
+
+def _resultados_laudo() -> list[dict]:
+    return [
+        {
+            "km": 33,
+            "amostra": "ICP_1",
+            "tipo_analise": "icp",
+            "icp": 84.0,
+            "conceito": "Muito Bom",
+            "rodovia": "BR-364",
+            "km_inicial": 33.6,
+            "km_final": 33.62,
+            "faixa": "2",
+            "data": "12/11/2026",
+            "operador": "Fulano",
+            "total_placas": 20,
+            "vdt": 16.0,
+            "q": 1,
+            "vdc": 16.0,
+            "defeitos": [
+                {"tipo": 5, "severidade": "B", "densidade": 10.0, "placas_afetadas": 2, "vd": 2.0},
+                {"tipo": 10, "severidade": "U", "densidade": 100.0, "placas_afetadas": 20, "vd": 14.0},
+            ],
+        },
+        {
+            "km": 33,
+            "amostra": "ICP_2",
+            "tipo_analise": "icp",
+            "icp": 100.0,
+            "conceito": "Excelente",
+            "rodovia": "BR-364",
+            "km_inicial": 33.62,
+            "km_final": 33.64,
+            "faixa": "2",
+            "total_placas": 20,
+            "vdt": 0.0,
+            "q": 0,
+            "vdc": 0.0,
+            "defeitos": [],
+        },
+        {
+            "km": 33,
+            "amostra": "ICP_3",
+            "tipo_analise": "icp",
+            "icp": 38.0,
+            "conceito": "Ruim",
+            "rodovia": "BR-364",
+            "km_inicial": 33.64,
+            "km_final": 33.66,
+            "faixa": "2",
+            "total_placas": 20,
+            "vdt": 62.0,
+            "q": 1,
+            "vdc": 62.0,
+            "defeitos": [
+                {"tipo": 7, "severidade": "A", "densidade": 100.0, "placas_afetadas": 20, "vd": 62.0},
+            ],
+        },
+    ]
+
+
+def test_get_laudo_icp_estruturado(viagem: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        resultado_store, "carregar_resultados", lambda *_args, **_kwargs: _resultados_laudo()
+    )
+
+    resposta = _cliente(viagem).get("/api/relatorios/icp/Viagem ICP/laudo")
+
+    assert resposta.status_code == 200
+    laudo = resposta.json()
+    assert laudo["norma"] == "DNIT 062/2004-PRO"
+    assert laudo["metadados"]["rodovia"] == "BR-364"
+    assert laudo["total_amostras"] == 3
+    assert laudo["amostras_em_branco"] == ["ICP_2"]
+    assert [item["amostra"] for item in laudo["amostras_criticas"]] == ["ICP_3"]
+    assert len(laudo["secoes"]["juntas_selante"]["itens"]) == 1
+    assert laudo["secoes"]["juntas_selante"]["itens"][0]["amostra"] == "ICP_1"
+    assert laudo["secoes"]["juntas_selante"]["resumo"]["amostras_afetadas"] == 1
+    conceitos = {item["conceito"] for item in laudo["distribuicao_conceitos"]}
+    assert conceitos == {"Muito Bom", "Excelente", "Ruim"}
+
+
+def test_exporta_laudo_csv_com_secoes(viagem: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        resultado_store, "carregar_resultados", lambda *_args, **_kwargs: _resultados_laudo()
+    )
+
+    resposta = _cliente(viagem).get("/api/relatorios/icp/Viagem ICP/laudo.csv")
+
+    assert resposta.status_code == 200
+    assert "text/csv" in resposta.headers["content-type"]
+    assert "laudo_icp_Viagem ICP.csv" in resposta.headers["content-disposition"]
+    texto = resposta.text
+    assert "LAUDO ICP — DNIT 062/2004-PRO" in texto
+    assert "RESUMO POR AMOSTRA" in texto
+    assert "DEFEITOS (UMA LINHA POR DEFEITO)" in texto
+    assert "JUNTAS E SELANTE (DEFEITO 5)" in texto
+    assert "DEFEITOS ATÍPICOS" in texto
+    assert "ASSENTAMENTOS" in texto
+    assert "BURACOS" in texto
+    assert "AMOSTRAS COM ICP <= 40" in texto
+    assert "DISTRIBUIÇÃO POR CONCEITO" in texto
+    assert "Defeito na selagem das juntas" in texto
+    # Amostra em branco entra no resumo, mas não na tabela de defeitos.
+    assert "ICP_2" in texto
+    assert "ICP_2,33.62" not in texto.split("DEFEITOS (UMA LINHA POR DEFEITO)")[1].split("JUNTAS E SELANTE")[0]

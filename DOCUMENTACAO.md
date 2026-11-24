@@ -104,6 +104,7 @@ soft delete e/ou restore do backup (ver abaixo).
 | `icp_curvas.py` | Curvas e correções do ICP geradas das planilhas ICP Pedágio |
 | `icp_import.py` | Importação das fichas de inspeção ICP (XLSX/CSV) e cálculo por amostra (RDT1-17) |
 | `icp_trecho.py` | ICP do trecho por inspeção total/amostragem e recálculo de `n` (RDT1-25) |
+| `icp_laudo.py` | Laudo do ICP com as seções do item 5.5 e amostras com ICP ≤ 40 (RDT1-26) |
 | `planilha_import.py` | Importação da planilha de afundamento das trilhas de roda (TRI/TRE) |
 | `routes_folders.py` | API principal (trabalhos, análise, uploads) |
 | `routes_reports.py` | Relatórios e exportação |
@@ -306,6 +307,52 @@ Regressão: `backend/tests/test_icp_trecho.py` cobre o exemplo da norma
 `e` ausente/inválido e a persistência com `amostra` nula;
 `test_persistencia_jobs.py` garante que a reconciliação das amostras preserva o
 trecho.
+
+
+### Laudo do ICP (RDT1-26)
+
+O laudo do item 5.5 da **DNIT 062/2004-PRO** é montado por
+`backend/src/services/icp_laudo.py` (`montar_laudo`) a partir das amostras e do
+consolidado persistidos. Ele reúne:
+
+* **resumo do trecho** — ICPt, conceito, `N`, desvio padrão `S`, `e` e `n`
+  mínimo (usa o trecho persistido; se não houver, consolida pela inspeção total
+  do item 7.3.1);
+* **distribuição por conceito** do Anexo B (quantidade, percentual e faixa de
+  ICP observada, sem alterar as faixas de `classificar_icp`);
+* **resumo por amostra** (VDT, `q`, VDC, ICP e conceito);
+* **juntas e selante** (defeito 5) com severidade, densidade e extensão
+  *estimada* (`nº de juntas afetadas × largura mediana da placa` do inventário
+  `icp_placas.json`; sem inventário, `extensao_m` fica nulo);
+* **defeitos atípicos** — registros fora das curvas 6.1–6.18 (sem valor
+  dedutível) e o campo opcional `atipicos` da amostra;
+* **assentamentos** e **buracos** — itens 19 e 20, registros complementares
+  não dedutíveis;
+* **amostras com ICP ≤ 40** (Anexo B: "Ruim" e pior), inclusive o limite 40.
+
+Amostra **em branco** (sem defeitos, ICP 100) aparece no resumo por amostra e na
+distribuição de conceitos, mas **não** entra nas seções de defeitos.
+
+API:
+
+* `GET /api/relatorios/icp/{viagem}/laudo` — JSON estruturado com
+  `metadados`, `resumo_trecho`, `distribuicao_conceitos`, `amostras`,
+  `defeitos`, `amostras_criticas` e `secoes`;
+* `GET /api/relatorios/icp/{viagem}/laudo.csv` — laudo em CSV com blocos de
+  metadados, resumo do trecho, resumo por amostra, uma linha por defeito,
+  juntas/selante, atípicos, assentamentos, buracos, ICP ≤ 40 e distribuição
+  por conceito;
+* o `GET .../icp/{viagem}/exportar` continua sendo a planilha normalizada (uma
+  linha por defeito + linha `TRECHO`), agora complementada pelo laudo.
+
+Na tela (`frontend/src/components/IcpView.tsx`) o card **Laudo** mostra o
+resumo do trecho, a distribuição de conceitos e filtros por seção (defeitos,
+juntas/selante, atípicos, assentamentos, buracos, ICP ≤ 40) e por amostras
+críticas; dois botões exportam a planilha e o laudo.
+
+Regressão: `backend/tests/test_icp_laudo.py` (seções, amostra em branco,
+limite `ICP = 40`, extensão das juntas, trecho persistido) e
+`test_api_icp.py` (JSON e CSV do laudo).
 
 ---
 

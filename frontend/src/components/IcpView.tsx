@@ -5,12 +5,14 @@ import {
   criarMarcacaoIcp,
   getConcatenadaUrl,
   getIcpExportUrl,
+  getIcpLaudoCsvUrl,
   getIcpRecorteUrl,
   gerarPlacasIcp,
   importarFichaIcp,
   listarFaixas,
   listarIcp,
   listarMarcacoesIcp,
+  obterLaudoIcp,
   obterPlacaIcp,
   obterPlacasIcp,
   removerMarcacaoIcp,
@@ -19,6 +21,8 @@ import type { FaixaInfo, IcpPlacaDetalhe } from '../services/api'
 import type {
   AnaliseResponse,
   IcpInventario,
+  IcpLaudo,
+  IcpLaudoItem,
   IcpMarcacao,
   IcpPlaca,
   IcpResultado,
@@ -158,6 +162,9 @@ export function IcpView() {
 
   const [viagemNome, setViagemNome] = useState(viagemAnaliseNome ?? '')
   const [resultados, setResultados] = useState<IcpResultado[]>([])
+  const [laudo, setLaudo] = useState<IcpLaudo | null>(null)
+  const [secaoLaudo, setSecaoLaudo] = useState('defeitos')
+  const [apenasCriticos, setApenasCriticos] = useState(false)
   const [inventario, setInventario] = useState<IcpInventario | null>(null)
   const [faixas, setFaixas] = useState<FaixaInfo[]>([])
   const [analise, setAnalise] = useState<AnaliseResponse | null>(null)
@@ -310,17 +317,19 @@ export function IcpView() {
       setResultados(lista)
       setFaixas(faixasViagem)
 
-      const [inv, analiseViagem, marcacoesViagem] = await Promise.all([
+      const [inv, analiseViagem, marcacoesViagem, laudoViagem] = await Promise.all([
         obterPlacasIcp(limpo).catch((err: unknown) => {
           if (statusErro(err) === 404) return null
           throw err
         }),
         carregarAnalise(limpo).catch(() => null),
         listarMarcacoesIcp(limpo).catch(() => [] as IcpMarcacao[]),
+        obterLaudoIcp(limpo).catch(() => null),
       ])
       setInventario(inv)
       setAnalise(analiseViagem)
       setMarcacoes(marcacoesViagem)
+      setLaudo(laudoViagem)
       if (lista.length === 0) {
         setAviso('Nenhum resultado de ICP persistido. Importe a ficha de inspeção para calcular.')
       }
@@ -349,6 +358,7 @@ export function IcpView() {
       )
       const inv = await obterPlacasIcp(nome).catch(() => null)
       setInventario(inv)
+      setLaudo(await obterLaudoIcp(nome).catch(() => null))
     } catch (err: unknown) {
       setErro(mensagemErro(err))
     } finally {
@@ -420,6 +430,66 @@ export function IcpView() {
       setExportando(false)
     }
   }, [viagemNome])
+
+  const aoExportarLaudo = useCallback(async () => {
+    const nome = viagemNome.trim()
+    if (!nome) return
+    setExportando(true)
+    setErro('')
+    try {
+      const resposta = await fetch(getIcpLaudoCsvUrl(nome))
+      if (!resposta.ok) {
+        throw new Error(await resposta.text())
+      }
+      const blob = await resposta.blob()
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `laudo_icp_${nome}.csv`
+      link.click()
+      URL.revokeObjectURL(url)
+    } catch (err: unknown) {
+      setErro(err instanceof Error ? err.message : 'Erro ao exportar o laudo do ICP.')
+    } finally {
+      setExportando(false)
+    }
+  }, [viagemNome])
+
+  const laudoSecoes = useMemo(
+    () => [
+      { chave: 'defeitos', rotulo: 'Defeitos' },
+      { chave: 'juntas_selante', rotulo: 'Juntas e selante' },
+      { chave: 'defeitos_atipicos', rotulo: 'Defeitos atípicos' },
+      { chave: 'assentamentos', rotulo: 'Assentamentos' },
+      { chave: 'buracos', rotulo: 'Buracos' },
+      { chave: 'criticas', rotulo: 'ICP ≤ 40' },
+    ],
+    [],
+  )
+
+  const laudoItens = useMemo(() => {
+    if (!laudo) return [] as IcpLaudoItem[]
+    const amostrasCriticas = new Set(laudo.amostras_criticas.map((item) => item.amostra))
+    let itens: IcpLaudoItem[] =
+      secaoLaudo === 'defeitos' ? laudo.defeitos
+      : secaoLaudo === 'criticas' ? laudo.amostras_criticas.map((item) => ({
+          amostra: item.amostra,
+          rodovia: item.rodovia,
+          km: null,
+          km_inicial: item.km_inicial,
+          km_final: item.km_final,
+          faixa: item.faixa,
+          icp: item.icp,
+          conceito: item.conceito,
+        } as IcpLaudoItem & { icp: number; conceito: string | null }))
+      : laudo.secoes[secaoLaudo as keyof IcpLaudo['secoes']]?.itens ?? []
+    if (apenasCriticos && secaoLaudo !== 'criticas') {
+      itens = itens.filter(
+        (item) => item.critico || amostrasCriticas.has(item.amostra),
+      )
+    }
+    return itens
+  }, [laudo, secaoLaudo, apenasCriticos])
 
   const alternarDetalhe = useCallback((amostra: string) => {
     setExpandidos((atual) => {
@@ -579,8 +649,16 @@ export function IcpView() {
           </label>
 
           <button
-            className="btn btn-success"
+            className="btn btn-secondary"
             onClick={aoExportar}
+            disabled={resultados.length === 0 || exportando}
+          >
+            {exportando ? 'Exportando...' : '📊 Exportar planilha'}
+          </button>
+
+          <button
+            className="btn btn-success"
+            onClick={aoExportarLaudo}
             disabled={resultados.length === 0 || exportando}
           >
             {exportando ? 'Exportando...' : '📤 Exportar laudo'}
@@ -715,6 +793,165 @@ export function IcpView() {
                     </Fragment>
                   )
                 })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {laudo && (
+        <div className="card icp-laudo-card">
+          <div className="grid-header">
+            <div>
+              <h3>Laudo — DNIT 062/2004-PRO</h3>
+              <p className="description">
+                Seções do item 5.5: juntas/selante, defeitos atípicos, assentamentos,
+                buracos e amostras com ICP ≤ 40. Amostras em branco (ICP 100) entram no
+                resumo, mas não nas seções de defeitos.
+              </p>
+            </div>
+          </div>
+
+          <div className="icp-laudo-resumo">
+            <span>
+              <strong>{laudo.total_amostras}</strong> amostras
+              {laudo.amostras_em_branco.length > 0
+                ? ` · ${laudo.amostras_em_branco.length} em branco`
+                : ''}
+            </span>
+            {laudo.resumo_trecho && (
+              <span>
+                ICPt {formatarNumero(laudo.resumo_trecho.icp ?? laudo.resumo_trecho.valor, 2)} ·{' '}
+                <span className={`icp-conceito-chip ${classeConceito(laudo.resumo_trecho.conceito ?? '')}`}>
+                  {laudo.resumo_trecho.conceito ?? '—'}
+                </span>
+                {laudo.resumo_trecho.N !== undefined ? ` · N ${laudo.resumo_trecho.N}` : ''}
+                {laudo.resumo_trecho.n_minimo !== null && laudo.resumo_trecho.n_minimo !== undefined
+                  ? ` · n ${laudo.resumo_trecho.n_minimo}`
+                  : ''}
+              </span>
+            )}
+            <span className="icp-laudo-criticas">
+              ICP ≤ {laudo.limite_icp_critico}: <strong>{laudo.amostras_criticas.length}</strong>
+            </span>
+          </div>
+
+          <div className="icp-laudo-distribuicao">
+            {laudo.distribuicao_conceitos.map((item) => (
+              <span key={item.conceito} className={`icp-conceito-chip ${classeConceito(item.conceito)}`}>
+                {item.conceito}: {item.quantidade} ({item.percentual.toFixed(0)}%)
+              </span>
+            ))}
+          </div>
+
+          <div className="icp-laudo-filtros">
+            <div className="icp-laudo-abas">
+              {laudoSecoes.map((secao) => (
+                <button
+                  key={secao.chave}
+                  type="button"
+                  className={`btn-sm ${secaoLaudo === secao.chave ? 'ativo' : ''}`}
+                  onClick={() => setSecaoLaudo(secao.chave)}
+                >
+                  {secao.rotulo}
+                </button>
+              ))}
+            </div>
+            <label className="icp-laudo-check">
+              <input
+                type="checkbox"
+                checked={apenasCriticos}
+                onChange={(e) => setApenasCriticos(e.target.checked)}
+              />
+              Somente amostras com ICP ≤ {laudo.limite_icp_critico}
+            </label>
+          </div>
+
+          <div className="table-scroll-container">
+            <table className="icp-tabela">
+              <thead>
+                {secaoLaudo === 'defeitos' && (
+                  <tr>
+                    <th>Amostra</th><th>KM</th><th>Faixa</th><th>Tipo</th>
+                    <th>Defeito</th><th>Sev.</th><th>Dens. (%)</th>
+                    <th>Placas</th><th>VD</th>
+                  </tr>
+                )}
+                {secaoLaudo === 'juntas_selante' && (
+                  <tr>
+                    <th>Amostra</th><th>KM</th><th>Faixa</th><th>Sev.</th>
+                    <th>Juntas afetadas</th><th>Dens. (%)</th>
+                    <th>Extensão (m)</th><th>VD</th>
+                  </tr>
+                )}
+                {['defeitos_atipicos', 'assentamentos', 'buracos'].includes(secaoLaudo) && (
+                  <tr>
+                    <th>Amostra</th><th>KM</th><th>Faixa</th><th>Tipo</th>
+                    <th>Descrição</th><th>Sev.</th>
+                  </tr>
+                )}
+                {secaoLaudo === 'criticas' && (
+                  <tr>
+                    <th>Amostra</th><th>KM</th><th>Faixa</th><th>ICP</th><th>Conceito</th>
+                  </tr>
+                )}
+              </thead>
+              <tbody>
+                {laudoItens.length === 0 ? (
+                  <tr>
+                    <td colSpan={9} className="icp-detalhe-vazio">
+                      Nenhum registro nesta seção.
+                    </td>
+                  </tr>
+                ) : (
+                  laudoItens.map((item, indice) => {
+                    const critico = item.critico || laudo.amostras_criticas.some((a) => a.amostra === item.amostra)
+                    const extra = item as IcpLaudoItem & { icp?: number; conceito?: string | null }
+                    return (
+                      <tr key={`${item.amostra}-${item.tipo ?? 'x'}-${indice}`} className={critico ? 'icp-linha-critica' : ''}>
+                        <td className="icp-amostra">{item.amostra}</td>
+                        <td>{formatarNumero(item.km_inicial, 3)}</td>
+                        <td>{item.faixa ?? '—'}</td>
+                        {secaoLaudo === 'defeitos' && (
+                          <>
+                            <td>{item.tipo}</td>
+                            <td>{item.nome ?? DEFEITO_NOMES[item.tipo ?? -1] ?? '—'}</td>
+                            <td>{item.severidade ?? '—'}</td>
+                            <td>{formatarNumero(item.densidade, 2)}</td>
+                            <td>{item.placas_afetadas ?? '—'}</td>
+                            <td>{formatarNumero(item.vd, 2)}</td>
+                          </>
+                        )}
+                        {secaoLaudo === 'juntas_selante' && (
+                          <>
+                            <td>{item.severidade ?? '—'}</td>
+                            <td>{item.juntas_afetadas ?? '—'}</td>
+                            <td>{formatarNumero(item.densidade, 2)}</td>
+                            <td>{formatarNumero(item.extensao_m, 2)}</td>
+                            <td>{formatarNumero(item.vd, 2)}</td>
+                          </>
+                        )}
+                        {['defeitos_atipicos', 'assentamentos', 'buracos'].includes(secaoLaudo) && (
+                          <>
+                            <td>{item.tipo ?? '—'}</td>
+                            <td>{item.nome ?? '—'}</td>
+                            <td>{item.severidade ?? '—'}</td>
+                          </>
+                        )}
+                        {secaoLaudo === 'criticas' && (
+                          <>
+                            <td>{formatarNumero(extra.icp, 2)}</td>
+                            <td>
+                              <span className={`icp-conceito-chip ${classeConceito(extra.conceito ?? '')}`}>
+                                {extra.conceito ?? '—'}
+                              </span>
+                            </td>
+                          </>
+                        )}
+                      </tr>
+                    )
+                  })
+                )}
               </tbody>
             </table>
           </div>
