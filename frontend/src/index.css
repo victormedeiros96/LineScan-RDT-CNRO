@@ -2539,6 +2539,27 @@ html.light body {
   margin: 0.2rem 0;
 }
 
+.icp-placa-faixa {
+  color: var(--text-muted);
+  word-break: break-all;
+}
+
+.icp-placa-recorte {
+  display: block;
+  width: 100%;
+  margin: 0.5rem 0;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  image-rendering: auto;
+}
+
+.icp-placa-nav {
+  display: flex;
+  gap: 0.4rem;
+  justify-content: space-between;
+  margin-top: 0.4rem;
+}
+
 @media (max-width: 900px) {
   .icp-resumo-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));

@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
+from fastapi.responses import FileResponse
 
 from src.api.routes_folders import _resolver_viagem
 from src.core.config import Settings
@@ -373,6 +374,127 @@ async def obter_placas_icp(
             404, "Inventário de placas não gerado para esta viagem."
         )
     return inventario
+
+
+def _localizar_placa(
+    inventario: dict, placa_id: str
+) -> dict | None:
+    for placa in inventario.get("placas", []):
+        if placa.get("id") == placa_id:
+            return placa
+    return None
+
+
+def _vizinhos_da_placa(
+    inventario: dict, placa: dict
+) -> tuple[dict | None, str | None, str | None]:
+    """Amostra da placa e os ids da placa anterior/próxima dentro dela."""
+    amostra_id = placa.get("amostra_id")
+    amostra = next(
+        (item for item in inventario.get("amostras", []) if item.get("id") == amostra_id),
+        None,
+    )
+    if amostra is None:
+        return None, None, None
+    ids = list(amostra.get("placas") or [])
+    try:
+        indice = ids.index(placa["id"])
+    except ValueError:
+        return amostra, None, None
+    anterior = ids[indice - 1] if indice > 0 else None
+    proxima = ids[indice + 1] if indice + 1 < len(ids) else None
+    return amostra, anterior, proxima
+
+
+@router.get("/icp/{viagem_nome}/placas/{placa_id}")
+async def obter_placa_icp(
+    viagem_nome: str,
+    placa_id: str,
+    settings: Settings = Depends(get_settings_dep),
+):
+    """Detalhe de uma placa do inventário persistido (RDT1-24).
+
+    Devolve a placa, a amostra a que pertence, os ids da anterior/próxima na
+    amostra e se há recorte de imagem disponível.
+    """
+    base = _resolver_viagem(settings, viagem_nome)
+    if base is None:
+        raise HTTPException(404, f"Viagem não encontrada: {viagem_nome}")
+    inventario = icp_placas.carregar_inventario(base)
+    if inventario is None:
+        raise HTTPException(
+            404, "Inventário de placas não gerado para esta viagem."
+        )
+    placa = _localizar_placa(inventario, placa_id)
+    if placa is None:
+        raise HTTPException(404, f"Placa não encontrada: {placa_id}")
+    amostra, anterior, proxima = _vizinhos_da_placa(inventario, placa)
+    tem_recorte = bool(placa.get("roi"))
+    return {
+        "viagem": base.name,
+        "placa": placa,
+        "amostra": amostra,
+        "anterior": anterior,
+        "proxima": proxima,
+        "recorte_disponivel": tem_recorte,
+        "recorte_url": (
+            f"/api/relatorios/icp/{base.name}/placas/{placa['id']}/recorte"
+            if tem_recorte
+            else None
+        ),
+    }
+
+
+_MEDIA_TYPE_RECORTE = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+}
+
+
+@router.get("/icp/{viagem_nome}/placas/{placa_id}/recorte")
+async def obter_recorte_placa_icp(
+    viagem_nome: str,
+    placa_id: str,
+    settings: Settings = Depends(get_settings_dep),
+):
+    """Serve o PNG de recorte da placa em ``icp_rois/`` (RDT1-24).
+
+    O nome do arquivo é sempre validado contra o diretório de ROIs da viagem
+    para impedir path traversal.
+    """
+    base = _resolver_viagem(settings, viagem_nome)
+    if base is None:
+        raise HTTPException(404, f"Viagem não encontrada: {viagem_nome}")
+    inventario = icp_placas.carregar_inventario(base)
+    if inventario is None:
+        raise HTTPException(
+            404, "Inventário de placas não gerado para esta viagem."
+        )
+    placa = _localizar_placa(inventario, placa_id)
+    if placa is None:
+        raise HTTPException(404, f"Placa não encontrada: {placa_id}")
+
+    roi = placa.get("roi") or {}
+    nome = roi.get("arquivo")
+    if not nome:
+        raise HTTPException(
+            404, f"A placa {placa_id} não tem recorte de imagem disponível."
+        )
+
+    sufixo = Path(str(nome)).suffix.lower()
+    if Path(str(nome)).name != str(nome) or sufixo not in _MEDIA_TYPE_RECORTE:
+        raise HTTPException(400, "Caminho de recorte inválido.")
+
+    diretorio = (base / "icp_rois").resolve()
+    caminho = (diretorio / str(nome)).resolve()
+    if caminho.parent != diretorio:
+        raise HTTPException(400, "Caminho de recorte inválido.")
+    if not caminho.is_file():
+        raise HTTPException(
+            404, f"Recorte da placa {placa_id} não encontrado em disco."
+        )
+    return FileResponse(caminho, media_type=_MEDIA_TYPE_RECORTE[sufixo])
 
 
 @router.get("/icp/{viagem_nome}/amostras")
