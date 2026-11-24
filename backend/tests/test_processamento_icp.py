@@ -128,6 +128,47 @@ def test_job_icp_conclui_com_aviso_sem_calibracao(
     assert persistidas == ["viagem_icp"]  # config/blocos/faixas gravados antes
 
 
+def test_job_icp_conclui_com_aviso_em_falha_inesperada(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Exceção fora de (RuntimeError, ValueError) não derruba o job (RDT1-29).
+
+    Ex.: dependência ausente no deploy (ModuleNotFoundError: skimage) deve virar
+    aviso estruturado com placas_geradas=False, mantendo a concatenação.
+    """
+    import src.jobs as jobs
+
+    monkeypatch.setattr(jobs, "get_settings", lambda: _settings(tmp_path))
+    monkeypatch.setattr(jobs, "processar_pasta", lambda *a, **kw: [])
+    monkeypatch.setattr(
+        jobs.viagem_store,
+        "persistir_viagem",
+        lambda **kw: None,
+    )
+    monkeypatch.setattr(
+        jobs,
+        "_processar_placas_icp",
+        lambda *a, **kw: (_ for _ in ()).throw(
+            ModuleNotFoundError("No module named 'skimage'")
+        ),
+    )
+
+    origem = tmp_path / "origem"
+    origem.mkdir()
+    resultado = _processar_imagens(
+        pasta_origem=str(origem),
+        viagem_nome="viagem_icp",
+        km_inicial=0.0,
+        tipo_analise="icp",
+    )
+
+    assert resultado["placas_geradas"] is False
+    assert resultado["avisos"] == [
+        "Placas do ICP não geradas: No module named 'skimage'"
+    ]
+    assert resultado["tipo_analise"] == "icp"
+
+
 def test_job_icp_exige_km_inicial() -> None:
     with pytest.raises(ValueError, match="km_inicial"):
         _processar_imagens(
