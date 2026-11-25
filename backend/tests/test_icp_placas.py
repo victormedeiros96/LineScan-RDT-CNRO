@@ -199,6 +199,84 @@ def test_salva_roi_por_placa(tmp_path: Path) -> None:
     assert (tmp_path / "icp_rois" / "icp_placa0001.png").is_file()
 
 
+def test_salva_roi_poligono_degenerado_nao_aborta(tmp_path: Path) -> None:
+    """Polígono com todos os pontos no mesmo KM não pode derrubar o job.
+
+    Regressão: com ``folga=0`` o ``recorta_roi`` gerava máscara de 0 linhas e o
+    ``cv2.fillPoly`` do OpenCV 5 falhava com "Layout of the output array img is
+    incompatible with cv::Mat", abortando a gravação de todas as placas.
+    """
+    altura, largura = 50, 200
+    faixas = [
+        FaixaInfo(
+            arquivo="f0.png",
+            bloco_indice=0,
+            faixa_index=0,
+            km_inicio=0.0,
+            km_fim=0.005,
+            altura_px=altura,
+        )
+    ]
+    imagem = np.full((altura, largura, 3), 200, dtype=np.uint8)
+    cv2.imwrite(str(tmp_path / "f0.png"), imagem)
+
+    placa = {
+        "id": "P0001",
+        "faixas": ["f0.png"],
+        "poligono_m": [
+            {"x_m": 0.2, "km": 0.002},
+            {"x_m": 1.0, "km": 0.002},
+            {"x_m": 1.0, "km": 0.002},
+            {"x_m": 0.2, "km": 0.002},
+        ],
+        "roi": None,
+    }
+
+    gravadas = salvar_rois(
+        tmp_path, faixas, [placa], mm_por_px_x=10.0, mm_por_px_y=10.0, folga=2
+    )
+
+    assert gravadas == 1
+    assert placa["roi"]["altura"] >= 1
+    assert (tmp_path / "icp_rois" / "icp_placa0001.png").is_file()
+
+
+def test_salva_roi_km_no_limite_da_faixa(tmp_path: Path) -> None:
+    """KM no ``km_fim`` da faixa é clampado em vez de extrapolar para fora."""
+    altura, largura = 50, 200
+    faixas = [
+        FaixaInfo(
+            arquivo="f0.png",
+            bloco_indice=0,
+            faixa_index=0,
+            km_inicio=0.0,
+            km_fim=0.005,
+            altura_px=altura,
+        )
+    ]
+    imagem = np.full((altura, largura, 3), 200, dtype=np.uint8)
+    cv2.imwrite(str(tmp_path / "f0.png"), imagem)
+
+    placa = {
+        "id": "P0001",
+        "faixas": ["f0.png"],
+        "poligono_m": [
+            {"x_m": 0.2, "km": 0.001},
+            {"x_m": 1.0, "km": 0.001},
+            {"x_m": 1.0, "km": 0.005},
+            {"x_m": 0.2, "km": 0.005},
+        ],
+        "roi": None,
+    }
+
+    gravadas = salvar_rois(
+        tmp_path, faixas, [placa], mm_por_px_x=10.0, mm_por_px_y=10.0, folga=2
+    )
+
+    assert gravadas == 1
+    assert placa["roi"]["altura"] <= altura
+
+
 # ── Leitura das faixas ───────────────────────────────────────────────────────
 def test_listar_faixas_le_metadados(tmp_path: Path) -> None:
     meta = {

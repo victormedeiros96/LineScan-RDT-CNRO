@@ -145,6 +145,19 @@ def _y_na_faixa(faixa: FaixaInfo, km: float) -> float:
     return fracao * faixa.altura_px
 
 
+def _indice_faixa_por_km(faixas: list[FaixaInfo], km: float) -> int:
+    """Índice da faixa que cobre ``km``; fora do intervalo usa a mais próxima.
+
+    O KM do polígono é arredondado a milímetro e o último ponto pode cair
+    exatamente no ``km_fim`` da última faixa (fora do intervalo meio-aberto).
+    Sem o ajuste ele cairia na faixa 0, extrapolando ``y`` para fora do strip.
+    """
+    for i, faixa in enumerate(faixas):
+        if faixa.km_inicio <= km < faixa.km_fim:
+            return i
+    return 0 if km < faixas[0].km_inicio else len(faixas) - 1
+
+
 def calibrar_por_juntas(
     juntas_km: Iterable[float],
     *,
@@ -715,13 +728,13 @@ def salvar_rois(
         poligono: list[list[float]] = []
         for ponto in placa.get("poligono_m") or []:
             km = float(ponto["km"])
-            indice = 0
-            for i, faixa in enumerate(faixas_placa):
-                if faixa.km_inicio <= km < faixa.km_fim:
-                    indice = i
-                    break
+            indice = _indice_faixa_por_km(faixas_placa, km)
             faixa = faixas_placa[indice]
-            y = float(deslocamentos[indice]) + _y_na_faixa(faixa, km)
+            topo = float(deslocamentos[indice])
+            y = topo + _y_na_faixa(faixa, km)
+            # Mantém o ponto dentro da faixa (o KM pode vir do arredondamento).
+            if faixa.altura_px > 0:
+                y = min(max(y, topo), topo + faixa.altura_px - 1)
             x = float(ponto["x_m"]) * 1000.0 / mm_por_px_x
             poligono.append([x, y])
 
@@ -754,9 +767,18 @@ def salvar_rois(
 
         strip = np.vstack(blocos)
         poligono_local = [[x, y - y0] for x, y in poligono]
-        recorte, origem, _mascara = jd_placas.recorta_roi(
-            strip, poligono_local, folga=0
-        )
+        # ``folga=0`` gera máscara de 0 linhas quando o polígono é degenerado em
+        # y (pontos no mesmo KM); o OpenCV 5 recusa ``fillPoly`` nesse caso.
+        # Uma folga mínima mantém a ROI com ao menos 1 px de altura.
+        try:
+            recorte, origem, _mascara = jd_placas.recorta_roi(
+                strip, poligono_local, folga=1
+            )
+        except Exception:
+            # Uma placa problemática não pode zerar as ROIs de toda a viagem.
+            continue
+        if recorte.size == 0:
+            continue
         nome = f"{prefixo}_placa{placa['id'].lstrip('P')}.png"
         cv2.imwrite(str(destino / nome), recorte)
         placa["roi"] = {

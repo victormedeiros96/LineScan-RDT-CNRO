@@ -779,6 +779,8 @@ depende de GPU: a geometria roda em CPU. Há duas origens de geometria:
   recebe `amostra_id`.
 * **Persistência** — inventário em `dados/<viagem>/icp_placas.json` e, quando
   os PNGs das faixas existem, ROI por placa em `dados/<viagem>/icp_rois/`.
+  O recorte clampa os cantos à faixa e usa folga mínima de 1 px; uma placa
+  degenerada (pontos no mesmo KM) é pulada sem interromper as demais (RDT1-35).
 
 API: `POST /api/relatorios/icp/{viagem}/placas` gera/persiste, aceitando
 `detectar: true` (roda o modelo e usa a geometria segmentada), `juntas`
