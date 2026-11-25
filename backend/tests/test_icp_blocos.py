@@ -260,6 +260,7 @@ def test_detectar_estrutura_separa_transversais_e_longitudinais(
             np.zeros((altura, largura), dtype=np.uint8),
             altura,
             0.0,
+            1.0,
         ),
     )
 

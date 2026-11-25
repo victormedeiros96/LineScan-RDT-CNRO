@@ -133,6 +133,7 @@ def _processar_imagens(
         faixa=faixa,
         max_batches=max_batches,
         todas_faixas=(tipo_analise == "icp"),
+        salvar_cru=(tipo_analise == "icp"),
     )
 
     resultado: dict = {

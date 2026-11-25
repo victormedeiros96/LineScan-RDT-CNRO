@@ -839,6 +839,16 @@ API: `POST .../placas` com `detectar: true` usa esse caminho; a resposta e o
 `backend/tests/test_icp_blocos.py` (vão múltiplo → virtuais; vão incoerente →
 sem máscara; cruzamento com longitudinais; integração no inventário).
 
+**Entrada crua normalizada (RDT1-38).** No modo ICP o processamento grava, além
+das faixas de display, o bloco cru `lote_XXXX_cru.png` (cinza, sem CLAHE, mesma
+escala dos frames originais, 512 px/m) com o brilho de cada frame normalizado à
+mediana do bloco. `detectar_estrutura` prefere esse arquivo e converte o `y`
+detectado para o display (×2) antes de fechar os blocos. Isso evita que as
+emendas de exposição entre frames (a cada 2 m) e do CLAHE por faixa (a cada
+5 m) sejam detectadas como juntas transversais. Sem o arquivo cru, cai no
+caminho antigo (faixas de display).
+
+
 **Sem alteração no IGG** — o caminho do IGG não usa `icp_blocos` nem as novas
 chaves de inventário.
 

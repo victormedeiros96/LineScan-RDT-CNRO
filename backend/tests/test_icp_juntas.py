@@ -234,6 +234,7 @@ def test_detectar_estrutura_aplica_offset_de_bloco_em_km(
             np.zeros((1024, icp_juntas.icp_placas.LARGURA_FAIXA_PX), dtype=np.uint8),
             1024,
             faixas_bloco[0].km_inicio,
+            1.0,
         )
 
     monkeypatch.setattr(icp_juntas, "_strip_do_bloco", strip_fake)
@@ -268,3 +269,73 @@ def test_agrupar_juntas_nao_funde_juntas_de_metros_diferentes() -> None:
     agrupadas = icp_juntas._agrupar_juntas(juntas)
 
     assert [round(j["km"], 4) for j in agrupadas] == [100.0016, 100.0046]
+
+
+def test_detectar_estrutura_mapeia_escala_do_strip_cru(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RDT1-38: detecção roda no strip cru (512 px/m) e o y volta em display (×2)."""
+    import juntas_detector
+
+    def strip_fake(_base, faixas_bloco):
+        return (
+            np.zeros((1024, icp_juntas.icp_placas.LARGURA_FAIXA_PX), dtype=np.uint8),
+            1024,
+            faixas_bloco[0].km_inicio,
+            2.0,
+        )
+
+    monkeypatch.setattr(icp_juntas, "_strip_do_bloco", strip_fake)
+    monkeypatch.setattr(juntas_detector, "ProvedorTrincaDetector", _ModeloFake)
+    cfg = icp_juntas.ConfigJuntas(
+        nuclio_dir=tmp_path, modelo_pt=tmp_path / "modelo.pt"
+    )
+    (tmp_path / "modelo.pt").write_text("x", encoding="utf-8")
+
+    estrutura = icp_juntas.detectar_estrutura(tmp_path, _faixas(n_blocos=2), cfg)
+
+    por_bloco = {t["bloco_indice"]: t["km"] for t in estrutura["transversais"]}
+    # Junta crua em y≈860 → display 1720; bloco 1 soma 20 m.
+    assert por_bloco[0] == pytest.approx(0.00168, abs=1e-4)
+    assert por_bloco[1] == pytest.approx(0.02168, abs=1e-4)
+    # blocos_ranges ficam em coordenadas de display (altura crua × escala).
+    assert estrutura["blocos_ranges"][1][2] - estrutura["blocos_ranges"][1][1] == pytest.approx(2048.0)
+
+
+def test_salvar_bloco_cru_normaliza_brilho_por_frame(tmp_path: Path) -> None:
+    """RDT1-38: frames com exposições diferentes não geram degrau no strip cru."""
+    import cv2
+
+    from src.services import image_processor
+
+    largura = 32
+    claro = np.full((1024, largura, 3), 180, dtype=np.uint8)
+    escuro = np.full((1024, largura, 3), 90, dtype=np.uint8)
+
+    image_processor._salvar_bloco_cru(
+        [("a.png", claro), ("b.png", escuro)], tmp_path, 0
+    )
+
+    cru = cv2.imread(str(tmp_path / "lote_0000_cru.png"), cv2.IMREAD_GRAYSCALE)
+    assert cru.shape == (2048, largura)
+    media_a = float(cru[:1024].mean())
+    media_b = float(cru[1024:].mean())
+    assert abs(media_a - media_b) < 1.0
+
+
+def test_strip_do_bloco_prefere_arquivo_cru(tmp_path: Path) -> None:
+    """RDT1-38: usando o bloco cru, a escala para o display é 2 (1024/512 px/m)."""
+    import cv2
+
+    faixas = _faixas(n_blocos=1)
+    cv2.imwrite(
+        str(tmp_path / "lote_0000_cru.png"),
+        np.zeros((10240, 16), dtype=np.uint8),
+    )
+
+    strip, altura, km_inicio, escala = icp_juntas._strip_do_bloco(tmp_path, faixas)
+
+    assert strip.shape == (10240, 16)
+    assert altura == 10240
+    assert km_inicio == pytest.approx(0.0)
+    assert escala == pytest.approx(2.0)

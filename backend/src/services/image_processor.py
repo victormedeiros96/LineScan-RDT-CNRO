@@ -63,6 +63,37 @@ class LoteResult:
     imagens_no_lote: int
 
 
+def _salvar_bloco_cru(
+    frames: list[tuple[str, np.ndarray]], pasta_destino: Path, idx: int
+) -> None:
+    """Grava o bloco cru (cinza, sem CLAHE) com brilho normalizado por frame.
+
+    O ``trinca-detector`` foi treinado nos frames crus (512 px/m). Cada frame
+    tem exposição própria; ao empilhar direto a emenda vira uma borda horizontal
+    que o detector confunde com junta. Igualamos média/desvio de cada frame ao
+    alvo do bloco antes de concatenar (RDT1-38).
+    """
+    cinzas = [cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) for _, img in frames]
+    if not cinzas:
+        return
+    medias = [float(g.mean()) for g in cinzas]
+    desvios = [float(g.std()) for g in cinzas]
+    alvo_media = float(np.median(medias))
+    alvo_desvio = float(np.median(desvios)) or 1.0
+    altura = sum(g.shape[0] for g in cinzas)
+    largura = cinzas[0].shape[1]
+    cru = np.empty((altura, largura), dtype=np.uint8)
+    y = 0
+    for g in cinzas:
+        media = float(g.mean())
+        desvio = float(g.std()) or 1.0
+        norm = (g.astype(np.float32) - media) * (alvo_desvio / desvio) + alvo_media
+        h = g.shape[0]
+        cru[y:y + h] = np.clip(norm, 0, 255).astype(np.uint8)
+        y += h
+    cv2.imwrite(str(Path(pasta_destino) / f"lote_{idx:04d}_cru.png"), cru)
+
+
 def apply_clahe(img: np.ndarray, clip_limit: float = 2.0, tile_size: int = 8) -> np.ndarray:
     clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(tile_size, tile_size))
     if len(img.shape) == 2:
@@ -133,6 +164,7 @@ def _processar_lote(
         clahe_clip,
         clahe_tile,
         faixas_alvo,
+        salvar_cru,
     ) = args
     if not isinstance(faixas_alvo, (list, tuple)):
         faixas_alvo = (faixas_alvo,)
@@ -173,6 +205,9 @@ def _processar_lote(
         y += h
 
     pasta_destino.mkdir(parents=True, exist_ok=True)
+
+    if salvar_cru:
+        _salvar_bloco_cru(frames, pasta_destino, idx)
 
     nomes_empilhados = [nome for nome, _ in frames]
     px_por_img = ALTURA_PX
@@ -315,6 +350,7 @@ def processar_pasta(
     max_batches: int | None = None,
     workers: int | None = None,
     todas_faixas: bool = False,
+    salvar_cru: bool = False,
 ) -> list[dict]:
     """
     1. Ordena imagens e agrupa em lotes de imagens_por_lote.
@@ -364,6 +400,7 @@ def processar_pasta(
             clahe_clip,
             clahe_tile,
             faixas_alvo,
+            salvar_cru,
         )
         for idx, batch in blocos_a_processar
     ]
