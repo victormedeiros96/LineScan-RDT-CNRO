@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from src.services import icp_juntas
@@ -99,3 +100,137 @@ def test_carregar_config_le_bloco_juntas(tmp_path: Path) -> None:
     assert cfg.modelo_pt == Path("/m/modelo.pt")
     assert cfg.limiar == 0.7
     assert cfg.mm_por_px_y == 2.0
+
+
+# ── Seleção da transversal (RDT1-31) ─────────────────────────────────────────
+def _grupo(linha: dict, *, n: int = 1, comprimento: float | None = None) -> dict:
+    """Grupo no formato de ``geometria.agrupar`` (t0/t1 estendidos)."""
+    a, b = float(linha["a"]), float(linha["b"])
+    return {
+        "orientacao": "h",
+        "a": a,
+        "b": b,
+        "t0": 0.0,
+        "t1": 4095.0,
+        "comprimento": comprimento if comprimento is not None else float(np.ptp([a, b])),
+        "n_fragmentos": n,
+        "n_pontos": n * 2,
+        "angulo_graus": float(np.degrees(np.arctan(a))),
+    }
+
+
+def test_selecionar_transversal_prefere_a_junta_real_em_vez_do_ajuste_fora_da_imagem() -> None:
+    """Mesma cobertura estendida: não pode vencer o ajuste extrapolado.
+
+    Regressão do RDT1-31: com ``max(t1 - t0)`` todos empatavam e o primeiro
+    (menor ``b``, fora da imagem) era escolhido — a junta real em ``y≈860``
+    era descartada, sobrando ~2 juntas no trecho inteiro.
+    """
+    fora = _grupo({"a": np.tan(np.radians(42.0)), "b": -176.0}, n=1)
+    real = _grupo({"a": 0.0, "b": 860.0}, n=3)
+
+    escolhido = icp_juntas._selecionar_transversal(
+        [fora, real], altura=1024, largura=4096
+    )
+
+    assert escolhido is real
+
+
+def test_selecionar_transversal_rejeita_trinca_diagonal() -> None:
+    diagonal = _grupo({"a": np.tan(np.radians(35.0)), "b": 600.0}, n=5)
+    horizontal = _grupo({"a": 0.0, "b": 640.0}, n=1)
+
+    escolhido = icp_juntas._selecionar_transversal(
+        [diagonal, horizontal], altura=1024, largura=4096
+    )
+
+    assert escolhido is horizontal
+
+
+def test_selecionar_transversal_sem_grupo_valido() -> None:
+    fora = _grupo({"a": np.tan(np.radians(45.0)), "b": -800.0}, n=4)
+
+    assert icp_juntas._selecionar_transversal([fora], altura=1024, largura=4096) is None
+
+
+class _ProvedorFake:
+    def __init__(self, base: Path, faixas: list[FaixaInfo]):
+        self._faixas = faixas
+
+    def __len__(self) -> int:
+        return len(self._faixas)
+
+    def frame(self, _indice: int) -> np.ndarray:
+        return np.zeros((1024, 4096), dtype=np.uint8)
+
+    def km_da_janela(self, _indice: int, y: float) -> float:
+        return 100.0 + y * icp_juntas.MM_POR_PX_Y_PADRAO / 1_000_000.0
+
+
+class _ModeloFake:
+    """Devolve duas polilinhas: uma extrapolada (fora) e a junta real."""
+
+    def __init__(self, *_args, **_kwargs) -> None:
+        pass
+
+    @staticmethod
+    def para_pontos(formas, rotulo: str = "junta") -> list[np.ndarray]:
+        return [
+            np.asarray(forma["points"], float).reshape(-1, 2)
+            for forma in formas
+            if forma.get("label") == rotulo
+        ]
+
+    def detectar(self, _imagem) -> list[dict]:
+        def linha(x0: float, y0: float, x1: float, y1: float) -> dict:
+            return {
+                "confidence": "1.0",
+                "label": "junta",
+                "type": "polyline",
+                "points": [x0, y0, x1, y1],
+            }
+
+        return [
+            linha(0.0, -176.0, 2048.0, -176.0 + 0.9 * 2048.0),
+            linha(0.0, 860.0, 2048.0, 860.0),
+            linha(2048.0, 862.0, 4095.0, 862.0),
+        ]
+
+
+def test_detectar_juntas_geometria_usa_melhor_por_janela(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import juntas_detector
+
+    monkeypatch.setattr(icp_juntas, "_ProvedorFaixas", _ProvedorFake)
+    monkeypatch.setattr(juntas_detector, "ProvedorTrincaDetector", _ModeloFake)
+    cfg = icp_juntas.ConfigJuntas(
+        nuclio_dir=tmp_path, modelo_pt=tmp_path / "modelo.pt"
+    )
+    (tmp_path / "modelo.pt").write_text("x", encoding="utf-8")
+
+    juntas = icp_juntas.detectar_juntas_geometria(
+        tmp_path, _faixas(n_blocos=1)[:1], cfg
+    )
+
+    assert len(juntas) == 1
+    # Junta real em y≈860–862 → ~1,68 m; o ajuste fora da imagem não entra.
+    assert juntas[0]["km"] == pytest.approx(100.00168, abs=1e-4)
+    assert abs(juntas[0]["angulo_graus"]) < 1.0
+
+
+def test_agrupar_juntas_nao_funde_juntas_de_metros_diferentes() -> None:
+    """Regressão RDT1-31: a tolerância é de 15 cm, não de 150 m.
+
+    ``km`` é em quilômetros; comparar direto com ``TOLERANCIA_JUNTA_M``
+    (metros) tratava juntas a 3 m como duplicatas e deixava ~1 por 100 m.
+    """
+    juntas = [
+        {"km": 100.0016},
+        {"km": 100.0046},  # 3 m depois: junta diferente
+        {"km": 100.0047},  # 10 cm depois da anterior: duplicata
+    ]
+
+    agrupadas = icp_juntas._agrupar_juntas(juntas)
+
+    assert [round(j["km"], 4) for j in agrupadas] == [100.0016, 100.0046]
