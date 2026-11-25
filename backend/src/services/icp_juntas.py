@@ -229,6 +229,180 @@ def detectar_juntas_geometria(
     return juntas
 
 
+class _ProvedorFormas:
+    """Adapta as formas já inferidas ao protocolo ``infer`` do pacote.
+
+    Evita rodar o modelo duas vezes por bloco: as transversais e as longitudinais
+    saem da **mesma** inferência sobre o strip concatenado.
+    """
+
+    def __init__(self, formas: list[dict[str, Any]]):
+        self._formas = formas
+
+    def infer(self, _imagem):
+        return self._formas
+
+
+def _agrupar_por_bloco(
+    faixas: list[icp_placas.FaixaInfo],
+) -> list[tuple[int, list[icp_placas.FaixaInfo]]]:
+    por_bloco: dict[int, list[icp_placas.FaixaInfo]] = {}
+    for faixa in sorted(faixas, key=lambda f: (f.km_inicio, f.faixa_index)):
+        por_bloco.setdefault(faixa.bloco_indice, []).append(faixa)
+    return sorted(por_bloco.items(), key=lambda item: item[1][0].km_inicio)
+
+
+def _strip_do_bloco(
+    base: Path, faixas_bloco: list[icp_placas.FaixaInfo]
+) -> tuple[Any, int, float]:
+    """Concatena as faixas de um bloco em uma imagem e devolve ``(strip, altura, km_inicio)``."""
+    import cv2
+    import numpy as np
+
+    blocos = []
+    altura_total = 0
+    for faixa in faixas_bloco:
+        caminho = Path(faixa.arquivo)
+        if not caminho.is_absolute():
+            caminho = Path(base) / caminho
+        imagem = cv2.imread(str(caminho), cv2.IMREAD_GRAYSCALE)
+        if imagem is None:
+            raise FileNotFoundError(f"Faixa não encontrada: {caminho}")
+        blocos.append(imagem)
+        altura_total += imagem.shape[0]
+    strip = np.vstack(blocos)
+    return strip, altura_total, float(faixas_bloco[0].km_inicio)
+
+
+def _selecionar_par_longitudinais(
+    retas: list[Any],
+    *,
+    mm_por_px_x: float,
+    altura_px: int,
+    largura_min_m: float = 3.0,
+    largura_max_m: float = 4.5,
+) -> tuple[Any, Any] | None:
+    """Escolhe o par de longitudinais que forma a largura da placa (3,0–4,5 m)."""
+    validas = [r for r in retas if 0.0 <= r.x(altura_px / 2.0) <= icp_placas.LARGURA_FAIXA_PX - 1]
+    if len(validas) < 2:
+        return None
+    melhor: tuple[float, tuple[Any, Any]] | None = None
+    for i, esq in enumerate(validas):
+        for dir_ in validas[i + 1:]:
+            largura_m = abs(dir_.x(altura_px / 2.0) - esq.x(altura_px / 2.0)) * mm_por_px_x / 1000.0
+            if not (largura_min_m <= largura_m <= largura_max_m):
+                continue
+            erro = abs(largura_m - 3.6)
+            if melhor is None or erro < melhor[0]:
+                par = sorted([esq, dir_], key=lambda r: r.x(altura_px / 2.0))
+                melhor = (erro, (par[0], par[1]))
+    return melhor[1] if melhor else None
+
+
+def detectar_estrutura(
+    base: Path,
+    faixas: list[icp_placas.FaixaInfo],
+    config: ConfigJuntas,
+    *,
+    max_blocos: int | None = None,
+    comprimento_max_m: float = icp_placas.COMPRIMENTO_MAX_M,
+) -> dict[str, Any]:
+    """Detecta transversais **e** longitudinais sobre a imagem concatenada.
+
+    Concatena as faixas de cada bloco (≈20 m), roda o modelo uma vez por bloco e
+    separa as duas famílias de juntas. As transversais saem no eixo do KM
+    (``km`` absoluto) e o par de longitudinais fica em coordenadas do strip da
+    viagem, pronto para o cruzamento em ``icp_blocos.montar_blocos``.
+
+    Devolve ``transversais``, ``retas_por_bloco``, ``blocos_ranges`` e ``km0``.
+    Levanta erro explícito quando o modelo não está disponível ou não há faixas.
+    """
+    from src.services import icp_blocos
+
+    if not config.disponivel:
+        raise RuntimeError(
+            "Modelo de juntas indisponível. Configure 'juntas' em "
+            "modelos/icp/config.json (nuclio_dir e modelo_pt) ou defina "
+            "ICP_NUCLIO_DIR/ICP_MODELO_PT."
+        )
+    if not faixas:
+        raise ValueError("Nenhuma faixa disponível para detectar juntas.")
+
+    from juntas_detector import ProvedorTrincaDetector, geometria, longitudinais
+
+    modelo = ProvedorTrincaDetector(
+        config.nuclio_dir, config.modelo_pt, limiar=config.limiar
+    )
+    mm_x = icp_placas.MM_POR_PX
+    km0 = min(float(f.km_inicio) for f in faixas)
+    largura = icp_placas.LARGURA_FAIXA_PX
+    x_ref = largura / 2.0
+
+    transversais: list[dict[str, Any]] = []
+    retas_por_bloco: dict[int, tuple[Any, Any]] = {}
+    blocos_ranges: list[tuple[int, float, float]] = []
+
+    grupos = _agrupar_por_bloco(faixas)
+    for indice, (bloco_indice, faixas_bloco) in enumerate(grupos):
+        if max_blocos is not None and indice >= max_blocos:
+            break
+        strip, altura, km_inicio = _strip_do_bloco(base, faixas_bloco)
+        y0_global = (km_inicio - km0) * icp_placas.PX_POR_METRO
+        blocos_ranges.append((bloco_indice, y0_global, y0_global + altura))
+
+        formas = modelo.detectar(strip)
+        pontos = ProvedorTrincaDetector.para_pontos(formas, "junta")
+        if pontos:
+            grupos_geo = geometria.agrupar(
+                pontos, largura=largura, altura=altura
+            )
+            for grupo in grupos_geo:
+                if grupo.get("orientacao") != "h":
+                    continue
+                if float(grupo.get("t1", 0.0)) - float(grupo.get("t0", 0.0)) <= 0:
+                    continue
+                y_centro = float(grupo["a"]) * x_ref + float(grupo["b"])
+                transversais.append(
+                    {
+                        "y": y0_global + y_centro,
+                        "angulo_graus": float(grupo.get("angulo_graus") or 0.0),
+                        "x0": float(grupo["t0"]),
+                        "x1": float(grupo["t1"]),
+                        "origem": "detectada",
+                        "bloco_indice": bloco_indice,
+                    }
+                )
+
+        provedor = _ProvedorFormas(formas)
+        fragmentos = longitudinais.fragmentos_verticais(provedor, strip)
+        candidatas = [
+            reta
+            for reta in longitudinais.agrupa_por_retas(fragmentos)
+            if longitudinais.valida(reta, altura)
+        ]
+        par = _selecionar_par_longitudinais(
+            candidatas, mm_por_px_x=mm_x, altura_px=altura
+        )
+        if par is not None:
+            retas_por_bloco[bloco_indice] = (
+                icp_blocos.reta_para_global(par[0], y0_global),
+                icp_blocos.reta_para_global(par[1], y0_global),
+            )
+
+    for junta in transversais:
+        junta["km"] = round(
+            km0 + float(junta["y"]) * icp_placas.MM_POR_PX / 1_000_000.0, 6
+        )
+
+    _ = comprimento_max_m  # o limite é aplicado no fechamento dos blocos
+    return {
+        "transversais": transversais,
+        "retas_por_bloco": retas_por_bloco,
+        "blocos_ranges": blocos_ranges,
+        "km0": km0,
+    }
+
+
 def detectar_juntas_km(
     base: Path,
     faixas: list[icp_placas.FaixaInfo],

@@ -113,6 +113,10 @@ function paraCanvas(x1: number, y1: number, x2: number, y2: number): Retangulo {
   }
 }
 
+function placaVirtual(placa: IcpPlaca): boolean {
+  return placa.origem_juntas === 'virtual' || placa.origem_largura === 'virtual'
+}
+
 function sobrepoeFaixa(placa: IcpPlaca, faixa: FaixaInfo): boolean {
   if (faixa.km_inicio === null || faixa.km_fim === null) return false
   return placa.km_fim > faixa.km_inicio && placa.km_inicio < faixa.km_fim
@@ -211,6 +215,24 @@ export function IcpView() {
     if (!inventario || faixas.length === 0) return [] as FaixaInfo[]
     return faixas.filter((faixa) => inventario.placas.some((placa) => sobrepoeFaixa(placa, faixa)))
   }, [inventario, faixas])
+
+  const indiceFaixa = useMemo(
+    () => faixasComPlacas.findIndex((faixa) => faixa.arquivo === faixaSelecionada),
+    [faixasComPlacas, faixaSelecionada],
+  )
+
+  const navegarFaixa = useCallback(
+    (delta: number) => {
+      if (faixasComPlacas.length === 0) return
+      const atual = indiceFaixa >= 0 ? indiceFaixa : 0
+      const proximo = Math.min(Math.max(atual + delta, 0), faixasComPlacas.length - 1)
+      setFaixaSelecionada(faixasComPlacas[proximo].arquivo)
+      setPlacaSelecionada(null)
+      setDetalhePlaca(null)
+      setErroPlaca('')
+    },
+    [faixasComPlacas, indiceFaixa],
+  )
 
   const placasDaFaixa = useMemo(() => {
     if (!inventario || !faixaAtual) return [] as IcpPlaca[]
@@ -1006,6 +1028,19 @@ export function IcpView() {
                 {inventario.descartadas.length} placas descartadas pela calibração.
               </span>
             )}
+            {(inventario.blocos_sem_mascara?.length ?? 0) > 0 && (
+              <span className="icp-erro">
+                {inventario.blocos_sem_mascara?.length} blocos sem máscara (junta/vão
+                incoerente):{' '}
+                {inventario.blocos_sem_mascara
+                  ?.slice(0, 6)
+                  .map((bloco) => `KM ${formatarNumero(bloco.km_inicio, 3)}`)
+                  .join(', ')}
+              </span>
+            )}
+            {(inventario.avisos?.length ?? 0) > 0 && (
+              <span className="icp-aviso">{inventario.avisos?.[0]}</span>
+            )}
             {amostrasSemPlacas.length > 0 && (
               <span className="icp-erro">
                 {amostrasSemPlacas.length} amostras sem placas: {amostrasSemPlacas.map((a) => a.id).join(', ')}.
@@ -1024,13 +1059,23 @@ export function IcpView() {
         <div className="card icp-overlay-card">
           <div className="grid-header">
             <div>
-              <h3>Overlay de placas e patologias</h3>
+              <h3>Blocos do ICP sobre a imagem concatenada</h3>
               <p className="description">
-                ROIs de placa sobre a faixa original (imagem rotacionada 90°, mesma convenção do IGG).
-                Use Ctrl/Cmd + roda para ampliar.
+                Cada bloco é o cruzamento de duas transversais com as duas longitudinais
+                (DNIT 062/2004-PRO). Contorno tracejado = fechamento com linha virtual
+                (junta estimada pelo tamanho médio). Use Ctrl/Cmd + roda para ampliar.
               </p>
             </div>
             <div className="km-selector-container">
+              <button
+                type="button"
+                className="btn-sm"
+                onClick={() => navegarFaixa(-1)}
+                disabled={indiceFaixa <= 0}
+                title="Imagem anterior da viagem"
+              >
+                ◀ Anterior
+              </button>
               <label>Faixa:</label>
               <select
                 value={faixaSelecionada}
@@ -1047,6 +1092,15 @@ export function IcpView() {
                   </option>
                 ))}
               </select>
+              <button
+                type="button"
+                className="btn-sm"
+                onClick={() => navegarFaixa(1)}
+                disabled={indiceFaixa < 0 || indiceFaixa >= faixasComPlacas.length - 1}
+                title="Próxima imagem da viagem"
+              >
+                Próxima ▶
+              </button>
               <button type="button" className="btn-sm" onClick={() => setZoom(100)}>Resetar zoom</button>
             </div>
           </div>
@@ -1093,6 +1147,7 @@ export function IcpView() {
                     if (!rect) return null
                     const cor = corAmostra(placa.amostra_id)
                     const selecionada = placa.id === placaSelecionada
+                    const virtual = placaVirtual(placa)
                     return (
                       <g key={placa.id}>
                         <rect
@@ -1103,9 +1158,15 @@ export function IcpView() {
                           fill={selecionada ? `${cor}55` : 'transparent'}
                           stroke={cor}
                           strokeWidth={selecionada ? 7 : 3}
+                          strokeDasharray={virtual ? '18 12' : undefined}
                           style={{ cursor: 'pointer' }}
                           onClick={() => abrirPlaca(placa.id)}
-                        />
+                        >
+                          <title>
+                            {placa.id} · {formatarNumero(placa.comprimento_m, 2)} m
+                            {virtual ? ' · fechado com linha virtual' : ''}
+                          </title>
+                        </rect>
                         <text
                           x={rect.x + 16}
                           y={rect.y + 42}
@@ -1114,7 +1175,7 @@ export function IcpView() {
                           fontWeight={800}
                           fontFamily="monospace"
                         >
-                          {placa.id}
+                          {placa.id}{virtual ? ' ~' : ''}
                         </text>
                       </g>
                     )

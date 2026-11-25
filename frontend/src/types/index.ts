@@ -210,6 +210,17 @@ export interface IcpPlaca {
   pontos_faixa: IcpPontoFaixa[]
   amostra_id: string
   roi?: { arquivo: string; x: number; y: number; largura: number; altura: number }
+  fechado?: boolean
+  origem_juntas?: 'detectada' | 'virtual'
+  origem_largura?: 'detectada' | 'virtual'
+}
+
+export interface IcpBlocoSemMascara {
+  km_inicio: number
+  km_fim: number
+  fechado: false
+  motivo: string
+  origem_juntas?: 'detectada' | 'virtual'
 }
 
 export interface IcpAmostra {
@@ -230,6 +241,8 @@ export interface IcpInventario {
   amostras: IcpAmostra[]
   placas: IcpPlaca[]
   descartadas: unknown[]
+  blocos_sem_mascara?: IcpBlocoSemMascara[]
+  avisos?: string[]
 }
 
 export interface IcpMarcacao {

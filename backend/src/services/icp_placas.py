@@ -468,6 +468,65 @@ def agrupar_amostras(
     return amostras
 
 
+def _placa_de_bloco(
+    bloco: dict[str, Any],
+    faixas_ordenadas: list[FaixaInfo],
+    *,
+    km0: float,
+    indice: int,
+    mm_por_px_x: float,
+    mm_por_px_y: float,
+) -> dict[str, Any]:
+    """Converte um bloco fechado (polígono no strip) no formato de placa do inventário."""
+    km_ini = float(bloco["km_inicio"])
+    km_fim = float(bloco["km_fim"])
+    faixas_da_placa = _faixas_do_intervalo(faixas_ordenadas, km_ini, km_fim)
+    faixa_principal = _faixa_em_km(faixas_ordenadas, km_ini) or faixas_da_placa[0]
+
+    poligono_px: list[list[float]] = []
+    pontos_faixa = []
+    poligono_m = []
+    for x_px, y_px in bloco["poligono"]:
+        km = km0 + float(y_px) * mm_por_px_y / 1_000_000.0
+        faixa = _faixa_em_km(faixas_ordenadas, km) or faixa_principal
+        poligono_px.append([round(float(x_px), 2), round(float(y_px), 2)])
+        pontos_faixa.append(
+            {
+                "arquivo": faixa.arquivo,
+                "faixa_index": faixa.faixa_index,
+                "x": round(float(x_px), 2),
+                "y": round(float(_y_na_faixa(faixa, km)), 2),
+            }
+        )
+        poligono_m.append(
+            {
+                "x_m": round(float(x_px) * mm_por_px_x / 1000.0, 3),
+                "km": round(float(km), 3),
+            }
+        )
+
+    return {
+        "id": f"P{indice:04d}",
+        "km": round((km_ini + km_fim) / 2.0, 3),
+        "km_inicio": round(km_ini, 3),
+        "km_fim": round(km_fim, 3),
+        "comprimento_m": round(float(bloco["comprimento_m"]), 3),
+        "largura_m": round(float(bloco["largura_m"]), 3),
+        "bloco_indice": bloco.get("bloco_indice") or faixa_principal.bloco_indice,
+        "faixa": faixa_principal.arquivo,
+        "faixa_index": faixa_principal.faixa_index,
+        "faixas": [f.arquivo for f in faixas_da_placa],
+        "poligono": poligono_px,
+        "poligono_m": poligono_m,
+        "pontos_faixa": pontos_faixa,
+        "amostra_id": None,
+        "roi": None,
+        "fechado": True,
+        "origem_juntas": bloco.get("origem_juntas", "detectada"),
+        "origem_largura": bloco.get("origem_largura", "detectada"),
+    }
+
+
 def montar_inventario(
     faixas: list[FaixaInfo],
     *,
@@ -481,19 +540,69 @@ def montar_inventario(
     mm_por_px_y: float = MM_POR_PX,
     calibracao: dict[str, Any] | None = None,
     juntas: Iterable[dict[str, Any]] | None = None,
+    estrutura: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Gera placas + amostras e devolve o inventário pronto para persistir.
 
-    Duas origens de geometria:
+    Três origens de geometria:
 
-    * ``juntas`` — as juntas transversais **detectadas na imagem**; cada placa é
-      o intervalo entre duas juntas consecutivas, com o tamanho medido na
-      segmentação (pode variar dentro da viagem). É o caminho preferido.
+    * ``estrutura`` — saída de ``icp_juntas.detectar_estrutura``: transversais +
+      longitudinais detectadas na imagem concatenada. Cada bloco é o cruzamento
+      das duas famílias, com linhas virtuais nos vãos múltiplos do tamanho médio.
+      É o caminho preferido do ICP (RDT1-33).
+    * ``juntas`` — somente as transversais **detectadas na imagem**; cada placa é
+      o intervalo entre duas juntas consecutivas (sem as longitudinais reais).
     * ``periodo_m``/``fase_m`` — rede periódica (calibração manual ou por
       ``juntas_km``), mantida como fallback.
     """
-    juntas_detectadas = list(juntas or [])
-    if juntas_detectadas:
+    from src.services import icp_blocos
+
+    blocos_sem_mascara: list[dict[str, Any]] = []
+    avisos: list[str] = []
+    descartadas: list[dict[str, Any]] = []
+
+    if estrutura is not None:
+        faixas_ordenadas = sorted(faixas, key=lambda f: (f.km_inicio, f.faixa_index))
+        saida = icp_blocos.montar_blocos(
+            estrutura.get("transversais") or [],
+            km0=float(estrutura["km0"]),
+            mm_por_px_y=mm_por_px_y,
+            mm_por_px_x=mm_por_px_x,
+            retas_por_bloco=estrutura.get("retas_por_bloco"),
+            blocos_ranges=estrutura.get("blocos_ranges"),
+            comprimento_max_m=comprimento_max_m,
+        )
+        placas = [
+            _placa_de_bloco(
+                bloco,
+                faixas_ordenadas,
+                km0=float(estrutura["km0"]),
+                indice=indice,
+                mm_por_px_x=mm_por_px_x,
+                mm_por_px_y=mm_por_px_y,
+            )
+            for indice, bloco in enumerate(saida["blocos"], start=1)
+        ]
+        blocos_sem_mascara = saida["blocos_sem_mascara"]
+        avisos = list(saida.get("avisos") or [])
+        calibracao = calibracao or {
+            "fonte": "detector_longitudinais",
+            "tamanho_medio_m": saida.get("tamanho_medio_m"),
+            "n_juntas": len(saida["transversais"]),
+            "n_juntas_virtuais": sum(
+                1 for t in saida["transversais"] if t.get("origem") == "virtual"
+            ),
+            "n_blocos_sem_mascara": len(blocos_sem_mascara),
+            "mm_por_px_x": mm_por_px_x,
+            "mm_por_px_y": mm_por_px_y,
+            "norma": NORMA_ICP,
+        }
+        if not placas:
+            avisos.append(
+                "Nenhum bloco fechado pelo cruzamento transversais × longitudinais; "
+                "confira a detecção de juntas e o par de longitudinais."
+            )
+    elif (juntas_detectadas := list(juntas or [])):
         placas, descartadas = gerar_placas_por_juntas(
             faixas,
             juntas_detectadas,
@@ -545,6 +654,8 @@ def montar_inventario(
         "amostras": amostras,
         "placas": placas,
         "descartadas": descartadas,
+        "blocos_sem_mascara": blocos_sem_mascara,
+        "avisos": avisos,
     }
 
 
@@ -669,5 +780,7 @@ def resumo_inventario(inventario: dict[str, Any]) -> dict[str, Any]:
         "total_placas": len(inventario.get("placas", [])),
         "total_amostras": len(inventario.get("amostras", [])),
         "total_descartadas": len(inventario.get("descartadas", [])),
+        "total_blocos_sem_mascara": len(inventario.get("blocos_sem_mascara", [])),
+        "avisos": inventario.get("avisos", []),
         "amostras": inventario.get("amostras", []),
     }

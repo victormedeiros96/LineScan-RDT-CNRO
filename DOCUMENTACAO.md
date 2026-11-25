@@ -102,6 +102,7 @@ soft delete e/ou restore do backup (ver abaixo).
 | `igg_calculator.py` | Cálculo do Índice de Gravidade Global por quilômetro |
 | `icp_calculator.py` | Cálculo do ICP de pavimento rígido (método da concessionária) |
 | `icp_curvas.py` | Curvas e correções do ICP geradas das planilhas ICP Pedágio |
+| `icp_blocos.py` | Fecha os blocos do ICP cruzando transversais × longitudinais e completa juntas virtuais (RDT1-33) |
 | `icp_import.py` | Importação das fichas de inspeção ICP (XLSX/CSV) e cálculo por amostra (RDT1-17) |
 | `icp_trecho.py` | ICP do trecho por inspeção total/amostragem e recálculo de `n` (RDT1-25) |
 | `icp_laudo.py` | Laudo do ICP com as seções do item 5.5 e amostras com ICP ≤ 40 (RDT1-26) |
@@ -793,6 +794,49 @@ validado contra o diretório da viagem (sem path traversal, 400 quando inválido
 404 quando a placa/arquivo não existe). A tela do ICP usa esses endpoints no
 painel lateral: clicar numa placa abre o recorte ampliado com KM, amostra,
 comprimento/largura e botões anterior/próxima; placa sem ROI mostra aviso.
+
+### Blocos do ICP por transversais × longitudinais (RDT1-33)
+
+O caminho preferido do job do rígido (quando não há calibração manual) roda
+`icp_juntas.detectar_estrutura` e `icp_blocos.montar_blocos`:
+
+1. **Concatenação** — as faixas de 5 m de cada bloco (≈20 m) são empilhadas em
+   uma única imagem cinza; o modelo roda **uma vez por bloco**.
+2. **Duas famílias de juntas** — as transversais saem de
+   `geometria.agrupar` (orientação `"h"`, posição em `km` absoluto) e as
+   longitudinais de `longitudinais.fragmentos_verticais` →
+   `agrupa_por_retas` → `valida`, com o par separado por 3,0–4,5 m
+   (`x = a·y + b`, convertido para o `y` global pela origem do bloco).
+3. **Cruzamento** — `placas.poligonos` fecha cada bloco entre duas transversais
+   consecutivas e as duas longitudinais. Cada bloco tem id (`P0001`…),
+   contorno/máscara, `origem_juntas` e `origem_largura`
+   (`detectada`/`virtual`).
+4. **Juntas faltantes (virtuais)** — mede-se o tamanho médio dos blocos já
+   fechados; para o vão entre duas juntas detectadas, `k = round(vão / médio)`.
+   Se `vão ≈ k × médio` (tolerância de 35 % do médio), o vão é dividido em `k`
+   partes iguais e as `k−1` juntas internas são marcadas `virtual`. Se não for
+   múltiplo coerente, **não força**: o trecho vai para `blocos_sem_mascara` e
+   gera aviso. A mesma ideia vale para a largura: sem par no bloco, reaproveita
+   a largura média/par mais próximo e marca `origem_largura = "virtual"`.
+5. **Inventário** — `montar_inventario(..., estrutura=...)` grava as placas
+   fechadas em `icp_placas.json` com o polígono no strip, `pontos_faixa` e
+   `poligono_m`, além de `blocos_sem_mascara` e `avisos`. Blocos sem máscara não
+   entram em `placas` (ficam registrados e sinalizados na tela).
+
+Na **tela do ICP** o overlay desenha os blocos sobre a faixa concatenada
+(rotacionada 90°, como no IGG), com id e contorno; blocos fechados por linha
+virtual aparecem com contorno **tracejado** e sufixo `~`. Os botões
+**◀ Anterior / Próxima ▶** navegam para frente e para trás entre as imagens da
+viagem. Avisos e a contagem de blocos sem máscara aparecem no resumo do
+inventário.
+
+API: `POST .../placas` com `detectar: true` usa esse caminho; a resposta e o
+`GET .../placas` trazem `blocos_sem_mascara` e `avisos`. Regressão em
+`backend/tests/test_icp_blocos.py` (vão múltiplo → virtuais; vão incoerente →
+sem máscara; cruzamento com longitudinais; integração no inventário).
+
+**Sem alteração no IGG** — o caminho do IGG não usa `icp_blocos` nem as novas
+chaves de inventário.
 
 ### Marcação manual de patologias no ICP (RDT1-23)
 
