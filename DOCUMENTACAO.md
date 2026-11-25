@@ -808,7 +808,9 @@ O caminho preferido do job do rígido (quando não há calibração manual) roda
    `geometria.agrupar` (orientação `"h"`, posição em `km` absoluto) e as
    longitudinais de `longitudinais.fragmentos_verticais` →
    `agrupa_por_retas` → `valida`, com o par separado por 3,0–4,5 m
-   (`x = a·y + b`, convertido para o `y` global pela origem do bloco).
+   (`x = a·y + b`, convertido para o `y` global pela origem do bloco). O
+   offset do bloco converte `km` em px com `×1.000×PX_POR_METRO` (RDT1-36);
+   sem o fator 1.000 as juntas de todos os blocos caem no início da viagem.
 3. **Cruzamento** — `placas.poligonos` fecha cada bloco entre duas transversais
    consecutivas e as duas longitudinais. Cada bloco tem id (`P0001`…),
    contorno/máscara, `origem_juntas` e `origem_largura`

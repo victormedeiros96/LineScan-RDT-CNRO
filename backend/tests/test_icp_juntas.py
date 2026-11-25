@@ -219,6 +219,40 @@ def test_detectar_juntas_geometria_usa_melhor_por_janela(
     assert abs(juntas[0]["angulo_graus"]) < 1.0
 
 
+def test_detectar_estrutura_aplica_offset_de_bloco_em_km(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regressão RDT1-36: o offset do bloco é km→px (×1.000), não km×px.
+
+    Com o fator errado, as juntas do bloco 1 caíam no KM do bloco 0 e todas as
+    placas ficavam empilhadas no início da viagem.
+    """
+    import juntas_detector
+
+    def strip_fake(_base, faixas_bloco):
+        return (
+            np.zeros((1024, icp_juntas.icp_placas.LARGURA_FAIXA_PX), dtype=np.uint8),
+            1024,
+            faixas_bloco[0].km_inicio,
+        )
+
+    monkeypatch.setattr(icp_juntas, "_strip_do_bloco", strip_fake)
+    monkeypatch.setattr(juntas_detector, "ProvedorTrincaDetector", _ModeloFake)
+    cfg = icp_juntas.ConfigJuntas(
+        nuclio_dir=tmp_path, modelo_pt=tmp_path / "modelo.pt"
+    )
+    (tmp_path / "modelo.pt").write_text("x", encoding="utf-8")
+
+    estrutura = icp_juntas.detectar_estrutura(tmp_path, _faixas(n_blocos=2), cfg)
+
+    por_bloco = {
+        t["bloco_indice"]: t["km"] for t in estrutura["transversais"]
+    }
+    # Junta local em y≈860–862 → 0,84 m dentro de cada bloco de 20 m.
+    assert por_bloco[0] == pytest.approx(0.00084, abs=1e-4)
+    assert por_bloco[1] == pytest.approx(0.02084, abs=1e-4)
+
+
 def test_agrupar_juntas_nao_funde_juntas_de_metros_diferentes() -> None:
     """Regressão RDT1-31: a tolerância é de 15 cm, não de 150 m.
 
