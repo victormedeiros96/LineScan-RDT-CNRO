@@ -285,3 +285,100 @@ def test_detectar_estrutura_separa_transversais_e_longitudinais(
     )
     assert len(inventario["placas"]) == 2
     assert inventario["placas"][0]["origem_largura"] == "detectada"
+
+
+# ── Filtro + rede periódica (RDT1-37) ───────────────────────────────────────
+def test_aplicar_rede_periodica_filtra_espurias_e_completa_virtuais() -> None:
+    """Rede de 5 m: duplicata e falsos positivos fora da rede são descartados.
+
+    Caso conferido à mão (y em metros, período 5 m, fase 0, tolerância 1,25 m):
+    detecções 0,0 / 0,2 (duplicata) / 2,0 (espúria) / 5,0 / 9,9 / 12,0 (espúria).
+    Linhas da rede: 0, 5, 10, 15. Resultado esperado: 0, 5, 10 (detectadas) e
+    15 (virtual); as de 2,0 e 12,0 ficam fora da rede (2 descartadas).
+    """
+    transversais = [
+        {"y": _px(0.0), "angulo_graus": 0.0, "x0": 0.0, "x1": 100.0},
+        {"y": _px(0.2), "angulo_graus": 1.0, "x0": 0.0, "x1": 4095.0},
+        {"y": _px(2.0), "angulo_graus": 0.0, "x0": 0.0, "x1": 4095.0},
+        {"y": _px(5.0), "angulo_graus": 0.0, "x0": 0.0, "x1": 4095.0},
+        {"y": _px(9.9), "angulo_graus": 0.0, "x0": 0.0, "x1": 4095.0},
+        {"y": _px(12.0), "angulo_graus": 0.0, "x0": 0.0, "x1": 4095.0},
+    ]
+
+    r = icp_blocos.aplicar_rede_periodica(
+        transversais,
+        periodo_px=_px(5.0),
+        fase_px=0.0,
+        y_inicio=0.0,
+        y_fim=_px(15.0),
+        mm_por_px_y=MM,
+    )
+
+    assert [round(t["y"] / PX_POR_M, 3) for t in r["transversais"]] == [0.0, 5.0, 10.0, 15.0]
+    assert [t["origem"] for t in r["transversais"]] == [
+        "detectada",
+        "detectada",
+        "detectada",
+        "virtual",
+    ]
+    # A duplicata de 0,2 m foi absorvida pela linha 0 e prevaleceu a de maior
+    # cobertura lateral (x1=4095); a virtual herdou essa cobertura.
+    assert r["transversais"][0]["x1"] == pytest.approx(4095.0)
+    assert r["transversais"][3]["x1"] == pytest.approx(4095.0)
+    assert r["n_detectadas_fora_rede"] == 2
+    assert r["tamanho_medio_m"] == pytest.approx(5.0, abs=1e-3)
+
+
+def test_montar_blocos_com_rede_periodica_gera_placas_coerentes() -> None:
+    """Com período 5 m, os blocos saem em 5 m mesmo com duplicatas/espúrias."""
+    r = icp_blocos.montar_blocos(
+        _transversais(0.0, 0.2, 2.0, 5.0, 9.9),
+        km0=0.0,
+        mm_por_px_y=MM,
+        retas_por_bloco={0: _retas()},
+        blocos_ranges=[(0, 0.0, _px(15.0))],
+        periodo_m=5.0,
+        fase_m=0.0,
+    )
+
+    assert len(r["blocos"]) == 3
+    assert [b["comprimento_m"] for b in r["blocos"]] == pytest.approx([5.0, 5.0, 5.0], abs=1e-3)
+    assert [b["origem_juntas"] for b in r["blocos"]] == [
+        "detectada",
+        "detectada",
+        "virtual",
+    ]
+    assert r["n_detectadas_fora_rede"] == 1  # a de 2,0 m
+
+
+def test_montar_inventario_com_rede_periodica_aplica_na_calibracao() -> None:
+    estrutura = {
+        "transversais": _transversais(0.0, 2.0, 5.0, 10.0),
+        "retas_por_bloco": {0: _retas()},
+        "blocos_ranges": [(0, 0.0, _px(15.0))],
+        "km0": 0.0,
+    }
+
+    inventario = montar_inventario(
+        _faixas(n_blocos=1),
+        estrutura=estrutura,
+        periodo_m=5.0,
+        fase_m=0.0,
+        mm_por_px_y=MM,
+        mm_por_px_x=MM,
+    )
+
+    assert len(inventario["placas"]) == 3
+    assert [p["comprimento_m"] for p in inventario["placas"]] == pytest.approx(
+        [5.0, 5.0, 5.0], abs=1e-3
+    )
+    cal = inventario["calibracao"]
+    assert cal["n_juntas"] == 4  # linhas 0, 5, 10 e 15 (virtual)
+    assert cal["n_juntas_virtuais"] == 1
+    assert cal["n_juntas_fora_rede"] == 1  # a de 2,0 m
+    assert [t["origem"] for t in cal["juntas_geometria"]] == [
+        "detectada",
+        "detectada",
+        "detectada",
+        "virtual",
+    ]
