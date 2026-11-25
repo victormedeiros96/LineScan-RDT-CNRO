@@ -403,7 +403,8 @@ def detectar_estrutura(
         if max_blocos is not None and indice >= max_blocos:
             break
         strip, altura, km_inicio = _strip_do_bloco(base, faixas_bloco)
-        y0_global = (km_inicio - km0) * icp_placas.PX_POR_METRO
+        # ``km_inicio``/``km0`` estão em km; PX_POR_METRO é px/m → ×1.000.
+        y0_global = (km_inicio - km0) * 1_000.0 * icp_placas.PX_POR_METRO
         blocos_ranges.append((bloco_indice, y0_global, y0_global + altura))
 
         formas = modelo.detectar(strip)
