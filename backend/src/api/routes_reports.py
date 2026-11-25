@@ -378,6 +378,7 @@ async def gerar_placas_icp(
         )
 
     calibracao: dict | None = None
+    estrutura: dict | None = None
     juntas_geometria = list(body.get("juntas") or [])
     mm_x = float(body.get("mm_por_px_x", icp_placas.MM_POR_PX))
     mm_y = float(body.get("mm_por_px_y", icp_placas.MM_POR_PX))
@@ -393,20 +394,36 @@ async def gerar_placas_icp(
                 ordem_invertida=settings.icp_ordem_invertida,
                 mm_por_px_y=settings.icp_mm_por_px_y,
             )
-            juntas_geometria = icp_juntas.detectar_juntas_geometria(
-                base, faixas, detector
+            estrutura = icp_juntas.detectar_estrutura(
+                base,
+                faixas,
+                detector,
+                comprimento_max_m=float(
+                    body.get("comprimento_max_m", icp_placas.COMPRIMENTO_MAX_M)
+                ),
             )
-            if not juntas_geometria:
+            if len(estrutura["transversais"]) < 2:
                 raise ValueError(
-                    "A detecção não encontrou juntas na imagem; confira o modelo e a escala."
+                    "A detecção não encontrou juntas suficientes na imagem; "
+                    "confira o modelo e a escala."
                 )
+            juntas_km = [float(t["km"]) for t in estrutura["transversais"]]
             calibracao = {
                 "fonte": "detector",
-                "n_juntas": len(juntas_geometria),
+                "n_juntas": len(juntas_km),
                 "mm_por_px_x": mm_x,
                 "mm_por_px_y": mm_y,
                 "norma": icp_placas.NORMA_ICP,
             }
+            if len(juntas_km) >= 3:
+                try:
+                    calibracao.update(
+                        icp_placas.calibrar_por_juntas(
+                            juntas_km, km0=estrutura["km0"], mm_por_px_y=mm_y
+                        )
+                    )
+                except ValueError:
+                    pass
         elif juntas_geometria:
             calibracao = {
                 "fonte": "juntas_detectadas",
@@ -441,6 +458,7 @@ async def gerar_placas_icp(
 
         inventario = icp_placas.montar_inventario(
             faixas,
+            estrutura=estrutura,
             juntas=juntas_geometria or None,
             periodo_m=periodo_m,
             fase_m=fase_m,

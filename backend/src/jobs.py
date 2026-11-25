@@ -203,17 +203,46 @@ def _processar_placas_icp(
         ordem_invertida=settings.icp_ordem_invertida,
         mm_por_px_y=settings.icp_mm_por_px_y,
     )
-    calibracao = icp_juntas.calibrar_viagem(
-        destino, faixas, config=juntas, detector=detector
-    )
-    juntas_geometria = calibracao.get("juntas_geometria")
-    if juntas_geometria:
+    manual = bool(juntas and (juntas.get("juntas_km") or juntas.get("periodo_m") is not None))
+    estrutura: dict | None = None
+    if manual:
+        calibracao = icp_juntas.calibrar_viagem(
+            destino, faixas, config=juntas, detector=detector
+        )
+    else:
+        # Caminho do ICP (RDT1-33): concatena as faixas por bloco, detecta
+        # transversais e longitudinais na mesma imagem e fecha os blocos pelo
+        # cruzamento das duas famílias, completando juntas faltantes.
+        estrutura = icp_juntas.detectar_estrutura(destino, faixas, detector)
+        juntas_km = [float(t["km"]) for t in estrutura["transversais"]]
+        if len(juntas_km) < 3:
+            raise RuntimeError(
+                f"Detecção de juntas insuficiente ({len(juntas_km)} encontradas); "
+                "não há juntas para fechar os blocos."
+            )
+        calibracao = icp_placas.calibrar_por_juntas(
+            juntas_km,
+            km0=estrutura["km0"],
+            mm_por_px_y=icp_placas.MM_POR_PX,
+        )
+        calibracao["fonte"] = "detector"
+        calibracao["juntas_geometria"] = estrutura["transversais"]
+
+    if estrutura is not None:
+        inventario = icp_placas.montar_inventario(
+            faixas,
+            estrutura=estrutura,
+            calibracao=calibracao,
+            mm_por_px_x=icp_placas.MM_POR_PX,
+            mm_por_px_y=icp_placas.MM_POR_PX,
+        )
+    elif calibracao.get("juntas_geometria"):
         # Placas montadas a partir das juntas realmente segmentadas na imagem:
         # o comprimento de cada placa vem da detecção e pode variar na viagem.
         # A geometria é no display da faixa (1024 px/m), por isso MM_POR_PX.
         inventario = icp_placas.montar_inventario(
             faixas,
-            juntas=juntas_geometria,
+            juntas=calibracao["juntas_geometria"],
             calibracao=calibracao,
             mm_por_px_x=icp_placas.MM_POR_PX,
             mm_por_px_y=icp_placas.MM_POR_PX,
@@ -235,6 +264,8 @@ def _processar_placas_icp(
         "total_amostras": len(inventario["amostras"]),
         "total_rois": total_rois,
         "placas_descartadas": len(inventario.get("descartadas") or []),
+        "blocos_sem_mascara": len(inventario.get("blocos_sem_mascara") or []),
+        "avisos": list(inventario.get("avisos") or []),
         "calibracao": calibracao,
         # Resumo estruturado (trecho + amostras) também vai para o resultado do
         # job no banco; o inventário completo continua em icp_placas.json.
