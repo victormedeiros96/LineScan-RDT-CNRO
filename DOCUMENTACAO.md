@@ -911,6 +911,31 @@ uma dependência ausente no deploy, como `skimage`), o job do rígido conclui co
 **Processamentos**) em vez de "sucesso silencioso" ou de falhar o job inteiro; a
 concatenação já produzida não é perdida e o `logger.warning` registra a causa.
 
+#### Seleção e agrupamento das juntas detectadas (RDT1-31)
+
+A detecção automática devolvia poucas juntas em levantamentos reais (ex.: 2 em
+200 m), mesmo com juntas nítidas na faixa. Duas causas em
+`backend/src/services/icp_juntas.py`:
+
+* **seleção por janela** — `geometria.agrupar` estende `t0`/`t1` de borda a
+  borda, então todo grupo horizontal tinha a mesma cobertura lateral e o
+  desempate por `t1 - t0` escolhia sempre o primeiro grupo, muitas vezes um
+  ajuste extrapolado **fora** da imagem. Agora a validade é medida em
+  `y` no centro da janela (mesmo ponto usado para o KM) e o desempate é por nº
+  de fragmentos e comprimento real (`_selecionar_transversal`); ajustes
+  inclinados acima de `ANGULO_MAX_TRANSVERSAL` (20°) são descartados — trinca
+  diagonal não é junta transversal;
+* **deduplicação com unidade trocada** — a tolerância de 15 cm era comparada
+  diretamente com `km` (quilômetros), então qualquer par de juntas a menos de
+  150 m virava "duplicata". `_agrupar_juntas` converte a diferença para metros
+  antes de comparar.
+
+No trecho real de 20 m (`lote_0000` de 10 frames, limiar 0,8), a correção
+recuperou **6 juntas** onde antes saía **1**, com período estimado de ~3,44 m
+(R=0,60) — coerente com as juntas visíveis em ~1,7 m e ~4,7 m de cada faixa.
+A calibração manual de 5,12 m usada na validação anterior é só um valor de
+fechamento do pipeline, não o período medido.
+
 O resultado do job guarda a calibração e um resumo estruturado do inventário
 (`inventario_resumo`: trecho e amostras) no banco; o inventário completo
 continua em `icp_placas.json` para consulta/transição.

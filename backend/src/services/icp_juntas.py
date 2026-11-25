@@ -35,6 +35,67 @@ MM_POR_PX_Y_PADRAO = 2000.0 / 1024.0
 MAX_FRAMES_CALIBRACAO = 500
 # Junta detectada em janelas vizinhas do mesmo frame pode duplicar; agrupa.
 TOLERANCIA_JUNTA_M = 0.15
+# Junta transversal é perpendicular à via. Trincas diagonais não devem virar
+# transversal: rejeita ajuste com inclinação acima deste limite (graus).
+ANGULO_MAX_TRANSVERSAL = 20.0
+
+
+def _selecionar_transversal(
+    grupos: Iterable[dict[str, Any]],
+    *,
+    altura: int,
+    largura: int,
+) -> dict[str, Any] | None:
+    """Escolhe a transversal mais confiável de uma janela.
+
+    ``geometria.agrupar`` estende ``t0``/``t1`` de borda a borda
+    (``estender=True``), então **todo** grupo horizontal sai com a mesma
+    cobertura lateral; usar ``t1 - t0`` como desempate (como antes) devolvia
+    sempre o primeiro grupo, muitas vezes um ajuste extrapolado fora da
+    imagem. Aqui a validade é medida no centro lateral (``y`` em ``x_ref``,
+    que é o mesmo ponto usado para o KM) e o desempate usa o nº de fragmentos
+    e o comprimento real medido nos pontos — o critério de
+    ``geometria.melhor_por_frame``, adaptado ao referencial do KM.
+    """
+    x_ref = largura / 2.0
+    validos: list[tuple[float, dict[str, Any]]] = []
+    for grupo in grupos:
+        if grupo.get("orientacao") != "h":
+            continue
+        if abs(float(grupo.get("angulo_graus") or 0.0)) > ANGULO_MAX_TRANSVERSAL:
+            continue
+        y_centro = float(grupo["a"]) * x_ref + float(grupo["b"])
+        if not (-5.0 <= y_centro <= altura + 5.0):
+            continue
+        validos.append((y_centro, grupo))
+    if not validos:
+        return None
+    _, escolhido = max(
+        validos,
+        key=lambda item: (
+            int(item[1].get("n_fragmentos") or 1),
+            float(item[1].get("comprimento") or 0.0),
+        ),
+    )
+    return escolhido
+
+
+def _agrupar_juntas(juntas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Remove duplicatas da mesma junta (detectada em janelas vizinhas).
+
+    A tolerância é em **metros**; ``km`` é em quilômetros, daí a conversão.
+    Comparar ``km`` com metros (bug do RDT1-31) tratava qualquer par de juntas
+    a menos de 150 m como duplicata e deixava ~1 junta por 100 m.
+    """
+    if not juntas:
+        return []
+    ordenadas = sorted(juntas, key=lambda j: float(j["km"]))
+    agrupadas = [ordenadas[0]]
+    for junta in ordenadas[1:]:
+        distancia_m = abs(float(junta["km"]) - float(agrupadas[-1]["km"])) * 1000.0
+        if distancia_m >= TOLERANCIA_JUNTA_M:
+            agrupadas.append(junta)
+    return agrupadas
 
 
 @dataclass(frozen=True)
@@ -204,11 +265,12 @@ def detectar_juntas_geometria(
         grupos = geometria.agrupar(
             pontos, largura=largura, altura=int(imagem.shape[0])
         )
-        transversais = [g for g in grupos if g.get("orientacao") == "h"]
-        if not transversais:
+        # Em 2 m cabe no máximo uma junta transversal: fica a mais confiável.
+        junta = _selecionar_transversal(
+            grupos, altura=int(imagem.shape[0]), largura=largura
+        )
+        if junta is None:
             continue
-        # Em 2 m cabe no máximo uma junta transversal: fica a de maior cobertura.
-        junta = max(transversais, key=lambda g: float(g["t1"] - g["t0"]))
         y_centro = float(junta["a"]) * x_ref + float(junta["b"])
         juntas.append(
             {
@@ -219,13 +281,7 @@ def detectar_juntas_geometria(
             }
         )
 
-    juntas.sort(key=lambda j: j["km"])
-    if len(juntas) >= 2:
-        agrupadas = [juntas[0]]
-        for junta in juntas[1:]:
-            if abs(junta["km"] - agrupadas[-1]["km"]) >= TOLERANCIA_JUNTA_M:
-                agrupadas.append(junta)
-        juntas = agrupadas
+    juntas = _agrupar_juntas(juntas)
     return juntas
 
 
@@ -359,9 +415,13 @@ def detectar_estrutura(
             for grupo in grupos_geo:
                 if grupo.get("orientacao") != "h":
                     continue
-                if float(grupo.get("t1", 0.0)) - float(grupo.get("t0", 0.0)) <= 0:
+                if abs(float(grupo.get("angulo_graus") or 0.0)) > ANGULO_MAX_TRANSVERSAL:
+                    # Trinca diagonal não é junta transversal (DNIT 062/2004-PRO).
                     continue
                 y_centro = float(grupo["a"]) * x_ref + float(grupo["b"])
+                if not (-5.0 <= y_centro <= altura + 5.0):
+                    # Ajuste extrapolado para fora do strip: não é junta.
+                    continue
                 transversais.append(
                     {
                         "y": y0_global + y_centro,
