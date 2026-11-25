@@ -53,6 +53,11 @@ class FaixaResult:
     imagens_raw: list[str]
     offset_y_px: int
     percentual_ultima_img: float
+    # Faixa na escala crua do sensor (4096×2560, sem CLAHE e sem esticar o eixo
+    # longitudinal): é o que o detector de juntas consome, pois o modelo foi
+    # treinado nos quadros crus (ver RDT1-31). ``None`` quando não solicitada.
+    arquivo_infer: str | None = None
+    altura_infer_px: int | None = None
 
 
 @dataclass
@@ -133,6 +138,7 @@ def _processar_lote(
         clahe_clip,
         clahe_tile,
         faixas_alvo,
+        salvar_infer,
     ) = args
     if not isinstance(faixas_alvo, (list, tuple)):
         faixas_alvo = (faixas_alvo,)
@@ -186,6 +192,15 @@ def _processar_lote(
             continue
 
         faixa_bgr = concat_bgr[y_inicio:y_fim, :, :]
+
+        # Faixa na escala crua do sensor (sem CLAHE e sem esticar o eixo
+        # longitudinal), consumida pelo detector de juntas do ICP (RDT1-31).
+        arquivo_infer: str | None = None
+        altura_infer = int(faixa_bgr.shape[0])
+        if salvar_infer:
+            arquivo_infer = f"lote_{idx:04d}_faixa_{faixa_idx}_infer.png"
+            cv2.imwrite(str(pasta_destino / arquivo_infer), faixa_bgr)
+
         faixa_bgr = apply_clahe(faixa_bgr, clip_limit=clahe_clip, tile_size=clahe_tile)
         faixa_display = cv2.resize(
             faixa_bgr, (LARGURA_PX, FAIXA_ALTURA_DISPLAY), interpolation=cv2.INTER_LINEAR
@@ -228,6 +243,8 @@ def _processar_lote(
                 imagens_raw=imagens_raw_faixa,
                 offset_y_px=offset_y,
                 percentual_ultima_img=percentual_ultima,
+                arquivo_infer=arquivo_infer,
+                altura_infer_px=altura_infer if salvar_infer else None,
             )
         )
 
@@ -315,6 +332,7 @@ def processar_pasta(
     max_batches: int | None = None,
     workers: int | None = None,
     todas_faixas: bool = False,
+    salvar_infer: bool = False,
 ) -> list[dict]:
     """
     1. Ordena imagens e agrupa em lotes de imagens_por_lote.
@@ -364,6 +382,7 @@ def processar_pasta(
             clahe_clip,
             clahe_tile,
             faixas_alvo,
+            salvar_infer,
         )
         for idx, batch in blocos_a_processar
     ]
@@ -391,6 +410,8 @@ def processar_pasta(
                     "km_inicio": f.km_inicio,
                     "km_fim": f.km_fim,
                     "altura_px": f.altura_px,
+                    "arquivo_infer": f.arquivo_infer,
+                    "altura_infer_px": f.altura_infer_px,
                 }
                 for f in l.faixas
             ],

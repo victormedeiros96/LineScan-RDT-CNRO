@@ -216,10 +216,13 @@ def test_todas_faixas_nao_pula_blocos_e_gera_as_quatro(tmp_path: Path, monkeypat
         tipo_pista="dupla",
         faixa=1,
         todas_faixas=True,
+        salvar_infer=True,
     )
 
     assert len(tarefas) == 4  # nenhum bloco pulado
     assert all(tarefa[8] == (0, 1, 2, 3) for tarefa in tarefas)
+    # O modo ICP também pede a faixa crua para o detector de juntas (RDT1-31).
+    assert all(tarefa[9] is True for tarefa in tarefas)
 
 
 def test_modo_igg_mantem_amostragem_e_uma_faixa(tmp_path: Path, monkeypatch) -> None:
@@ -253,6 +256,48 @@ def test_modo_igg_mantem_amostragem_e_uma_faixa(tmp_path: Path, monkeypatch) -> 
 
     assert [tarefa[0] for tarefa in tarefas] == [0, 2]  # blocos ímpares pulados
     assert all(tarefa[8] == (0,) for tarefa in tarefas)
+    assert all(tarefa[9] is False for tarefa in tarefas)
+
+
+def test_processar_lote_salva_faixa_crua_para_o_detector(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A faixa crua (sem CLAHE, 512 px/m) é o que o detector de juntas consome."""
+    import cv2
+    import numpy as np
+
+    monkeypatch.setattr(ip, "apply_clahe", lambda img, **_kw: img)
+    origem = tmp_path / "frames"
+    origem.mkdir()
+    for i in range(ip.IMAGENS_POR_LOTE):
+        img = np.full((ip.ALTURA_PX, ip.LARGURA_PX, 3), 40 + i * 5, np.uint8)
+        assert cv2.imwrite(str(origem / f"frame_{i:04d}.png"), img)
+
+    destino = tmp_path / "destino"
+    args = (
+        0,
+        [str(p) for p in sorted(origem.iterdir())],
+        str(destino),
+        "left",
+        5.0,
+        "crescente",
+        2.0,
+        8,
+        (0,),
+        True,
+    )
+    resultado = ip._processar_lote(args)
+    assert resultado is not None
+    faixa = resultado.faixas[0]
+
+    assert faixa.arquivo_infer == "lote_0000_faixa_0_infer.png"
+    assert faixa.altura_infer_px == ip.FAIXA_ALTURA_PX  # 2560 px = 5 m a 512 px/m
+    crua = cv2.imread(str(destino / faixa.arquivo_infer), cv2.IMREAD_GRAYSCALE)
+    assert crua is not None
+    assert crua.shape == (ip.FAIXA_ALTURA_PX, ip.LARGURA_PX)
+    # O display continua sendo a faixa com CLAHE esticada para 1024 px/m.
+    display = cv2.imread(str(destino / faixa.arquivo))
+    assert display.shape[0] == ip.FAIXA_ALTURA_DISPLAY
 
 
 # ── API: calibração opcional ─────────────────────────────────────────────────

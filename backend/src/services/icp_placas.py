@@ -46,6 +46,13 @@ ALTURA_FAIXA_PX = 5120
 PX_POR_METRO = 1024.0
 MM_POR_PX = 1000.0 / PX_POR_METRO  # 0.9765625 mm/px (isotrópico)
 
+# Faixa na escala crua do sensor (4096×2560 = 4 m × 5 m), consumida pelo
+# detector de juntas: é a escala em que o modelo foi treinado (RDT1-31).
+ALTURA_FAIXA_INFER_PX = 2560
+PX_POR_METRO_INFER = 512.0
+# 2:1 entre o display isotrópico (1024 px/m) e a faixa crua (512 px/m).
+FATOR_INFER_DISPLAY = PX_POR_METRO / PX_POR_METRO_INFER  # = 2.0
+
 TAMANHO_AMOSTRA = 20
 COMPRIMENTO_MAX_M = 9.0
 LARGURA_PLACA_M = 3.6
@@ -61,6 +68,23 @@ class FaixaInfo:
     km_inicio: float
     km_fim: float
     altura_px: int = ALTURA_FAIXA_PX
+    arquivo_infer: str | None = None
+    altura_infer_px: int | None = None
+
+    @property
+    def arquivo_deteccao(self) -> str:
+        """Imagem usada pelo detector de juntas: faixa crua se houver, senão display."""
+        return self.arquivo_infer or self.arquivo
+
+    @property
+    def escala_deteccao(self) -> float:
+        """Pixels por metro no eixo longitudinal da imagem de detecção."""
+        return PX_POR_METRO_INFER if self.arquivo_infer else PX_POR_METRO
+
+    @property
+    def fator_para_display(self) -> float:
+        """Fator para converter o eixo longitudinal da detecção no display (1024 px/m)."""
+        return FATOR_INFER_DISPLAY if self.arquivo_infer else 1.0
 
 
 def listar_faixas(base: Path) -> list[FaixaInfo]:
@@ -83,6 +107,12 @@ def listar_faixas(base: Path) -> list[FaixaInfo]:
                     km_inicio=float(km_inicio),
                     km_fim=float(km_fim),
                     altura_px=int(faixa.get("altura_px") or ALTURA_FAIXA_PX),
+                    arquivo_infer=faixa.get("arquivo_infer") or None,
+                    altura_infer_px=(
+                        int(faixa["altura_infer_px"])
+                        if faixa.get("altura_infer_px")
+                        else None
+                    ),
                 )
             )
     faixas.sort(key=lambda f: (f.km_inicio, f.bloco_indice, f.faixa_index))

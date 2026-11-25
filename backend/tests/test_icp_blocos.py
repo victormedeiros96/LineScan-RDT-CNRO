@@ -260,6 +260,7 @@ def test_detectar_estrutura_separa_transversais_e_longitudinais(
             np.zeros((altura, largura), dtype=np.uint8),
             altura,
             0.0,
+            1.0,
         ),
     )
 
@@ -284,3 +285,71 @@ def test_detectar_estrutura_separa_transversais_e_longitudinais(
     )
     assert len(inventario["placas"]) == 2
     assert inventario["placas"][0]["origem_largura"] == "detectada"
+
+
+def test_detectar_estrutura_le_faixa_crua_e_converte_para_display(
+    tmp_path, monkeypatch
+) -> None:
+    """Na faixa crua (512 px/m) um pixel equivale a dois do display (1024 px/m).
+
+    Trava a conversão do RDT1-31: o modelo roda na faixa crua, mas a geometria
+    entregue ao restante do sistema fica em coordenadas do display.
+    """
+    from src.services import icp_juntas
+
+    formato = {"label": "junta", "points": []}
+
+    class FakeProvedor:
+        def __init__(self, *_a, **_k):
+            pass
+
+        def detectar(self, _imagem):
+            return [formato]
+
+        @staticmethod
+        def para_pontos(_formas, rotulo="junta"):
+            import numpy as np
+
+            # Uma transversal em y=1024 px da faixa crua = 2 m = y=2048 no display.
+            return [np.asarray([[0.0, 1024.0], [2048.0, 1024.0], [4095.0, 1024.0]])]
+
+    import juntas_detector
+
+    monkeypatch.setattr(juntas_detector, "ProvedorTrincaDetector", FakeProvedor)
+    monkeypatch.setattr(
+        juntas_detector,
+        "longitudinais",
+        type(
+            "L",
+            (),
+            {
+                "fragmentos_verticais": staticmethod(lambda *_a, **_k: []),
+                "agrupa_por_retas": staticmethod(lambda *_a, **_k: []),
+                "valida": staticmethod(lambda *_a, **_k: True),
+            },
+        ),
+    )
+    # Strip de 20 m na faixa crua: 10240 px de altura, fator 2 para o display.
+    monkeypatch.setattr(
+        icp_juntas,
+        "_strip_do_bloco",
+        lambda _base, _faixas: (
+            __import__("numpy").zeros((10240, 4096), dtype="uint8"),
+            10240,
+            0.0,
+            2.0,
+        ),
+    )
+
+    (tmp_path / "nuclio").mkdir()
+    (tmp_path / "modelo.pt").write_text("x")
+    config = icp_juntas.ConfigJuntas(
+        nuclio_dir=tmp_path / "nuclio", modelo_pt=tmp_path / "modelo.pt"
+    )
+
+    estrutura = icp_juntas.detectar_estrutura(tmp_path, _faixas(), config)
+
+    assert len(estrutura["transversais"]) == 1
+    assert estrutura["transversais"][0]["y"] == pytest.approx(2048.0)
+    # O bloco cobre 20 m no display (20480 px), não 10240 px da faixa crua.
+    assert estrutura["blocos_ranges"][0][2] == pytest.approx(20480.0)

@@ -12,12 +12,18 @@ entregar a geometria das juntas realmente segmentadas. ``icp_placas`` monta cada
 placa como o intervalo entre duas juntas consecutivas detectadas — o tamanho sai
 da imagem e pode variar dentro da mesma viagem, sem um tamanho fixo declarado.
 
+O modelo foi treinado nos quadros crus do sensor (512 px/m no eixo longitudinal).
+Por isso a detecção roda sobre a **faixa crua** gravada no modo ICP
+(``lote_*_faixa_*_infer.png``, sem CLAHE) e converte a geometria para o display de
+1024 px/m antes de entregá-la (RDT1-31).
+
 Norma: DNIT 062/2004-PRO (avaliação objetiva de pavimento rígido).
 """
 from __future__ import annotations
 
 import json
 import logging
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -126,14 +132,20 @@ def calibrar_manual(
 
 
 class _ProvedorFaixas:
-    """Fornece janelas de 2 m (1024 px) das faixas, em ordem crescente de KM."""
+    """Fornece janelas de 1024 px na **escala de detecção** de cada faixa.
+
+    A detecção usa a faixa crua do sensor (``arquivo_infer``, 512 px/m) quando
+    existe — a mesma escala em que o modelo foi treinado — e cai para o display
+    com CLAHE só quando ela não estiver disponível (RDT1-31).
+    """
 
     def __init__(self, base: Path, faixas: list[icp_placas.FaixaInfo]):
         self.base = Path(base)
         self.faixas = sorted(faixas, key=lambda f: (f.km_inicio, f.faixa_index))
         self.janelas: list[tuple[icp_placas.FaixaInfo, int]] = []
         for faixa in self.faixas:
-            for y0 in range(0, int(faixa.altura_px), 1024):
+            altura = faixa.altura_infer_px or faixa.altura_px
+            for y0 in range(0, int(altura), 1024):
                 self.janelas.append((faixa, y0))
 
     def __len__(self) -> int:
@@ -143,7 +155,7 @@ class _ProvedorFaixas:
         import cv2
 
         faixa, y0 = self.janelas[indice]
-        caminho = Path(faixa.arquivo)
+        caminho = Path(faixa.arquivo_deteccao)
         if not caminho.is_absolute():
             caminho = self.base / caminho
         imagem = cv2.imread(str(caminho), cv2.IMREAD_GRAYSCALE)
@@ -153,8 +165,21 @@ class _ProvedorFaixas:
 
     def km_da_janela(self, indice: int, y_na_janela: float) -> float:
         faixa, y0 = self.janelas[indice]
-        metros_por_px = 1.0 / icp_placas.PX_POR_METRO
+        metros_por_px = 1.0 / faixa.escala_deteccao
         return float(faixa.km_inicio) + (y0 + y_na_janela) * metros_por_px / 1000.0
+
+
+def _angulo_para_display(angulo_graus: float, fator: float) -> float:
+    """Converte a inclinação de uma transversal da escala de detecção para o display.
+
+    ``fator`` é quantos pixels de display equivalem a um pixel de detecção no
+    eixo longitudinal (2 para a faixa crua, 1 para o próprio display). A reta
+    ``y = a*x + b`` vira ``y_disp = fator*a*x + fator*b``; o ângulo acompanha.
+    """
+    if fator == 1.0:
+        return float(angulo_graus)
+    return float(math.degrees(math.atan(math.tan(math.radians(angulo_graus)) * fator)))
+
 
 
 def detectar_juntas_geometria(
@@ -210,10 +235,13 @@ def detectar_juntas_geometria(
         # Em 2 m cabe no máximo uma junta transversal: fica a de maior cobertura.
         junta = max(transversais, key=lambda g: float(g["t1"] - g["t0"]))
         y_centro = float(junta["a"]) * x_ref + float(junta["b"])
+        faixa = provedor.janelas[indice][0]
         juntas.append(
             {
                 "km": provedor.km_da_janela(indice, y_centro),
-                "angulo_graus": float(junta.get("angulo_graus") or 0.0),
+                "angulo_graus": _angulo_para_display(
+                    float(junta.get("angulo_graus") or 0.0), faixa.fator_para_display
+                ),
                 "x0": float(junta["t0"]),
                 "x1": float(junta["t1"]),
             }
@@ -254,15 +282,21 @@ def _agrupar_por_bloco(
 
 def _strip_do_bloco(
     base: Path, faixas_bloco: list[icp_placas.FaixaInfo]
-) -> tuple[Any, int, float]:
-    """Concatena as faixas de um bloco em uma imagem e devolve ``(strip, altura, km_inicio)``."""
+) -> tuple[Any, int, float, float]:
+    """Concatena as faixas de um bloco na escala de detecção.
+
+    Devolve ``(strip, altura, km_inicio, fator_para_display)``. Quando a faixa
+    crua está disponível (``arquivo_infer``), o strip fica em 512 px/m — a
+    escala dos quadros de treino — e ``fator_para_display`` é 2 (o display tem
+    1024 px/m). Sem ela, cai para o display com CLAHE e o fator é 1.
+    """
     import cv2
     import numpy as np
 
     blocos = []
     altura_total = 0
     for faixa in faixas_bloco:
-        caminho = Path(faixa.arquivo)
+        caminho = Path(faixa.arquivo_deteccao)
         if not caminho.is_absolute():
             caminho = Path(base) / caminho
         imagem = cv2.imread(str(caminho), cv2.IMREAD_GRAYSCALE)
@@ -271,7 +305,27 @@ def _strip_do_bloco(
         blocos.append(imagem)
         altura_total += imagem.shape[0]
     strip = np.vstack(blocos)
-    return strip, altura_total, float(faixas_bloco[0].km_inicio)
+    fator = float(faixas_bloco[0].fator_para_display)
+    return strip, altura_total, float(faixas_bloco[0].km_inicio), fator
+
+
+def _reta_para_display(reta: Any, fator: float) -> Any:
+    """Leva uma reta longitudinal ``x = a*y + b`` da escala de detecção ao display."""
+    from juntas_detector.longitudinais import Reta
+
+    if fator == 1.0:
+        return reta
+    return Reta(
+        a=reta.a / fator,
+        b=reta.b,
+        n=reta.n,
+        comp=reta.comp * fator,
+        y0=reta.y0 * fator,
+        y1=reta.y1 * fator,
+        cobertura=reta.cobertura,
+        residuo=reta.residuo * fator,
+        obs=[(inicio * fator, fim * fator) for inicio, fim in reta.obs],
+    )
 
 
 def _selecionar_par_longitudinais(
@@ -346,9 +400,11 @@ def detectar_estrutura(
     for indice, (bloco_indice, faixas_bloco) in enumerate(grupos):
         if max_blocos is not None and indice >= max_blocos:
             break
-        strip, altura, km_inicio = _strip_do_bloco(base, faixas_bloco)
+        strip, altura, km_inicio, fator = _strip_do_bloco(base, faixas_bloco)
         y0_global = (km_inicio - km0) * icp_placas.PX_POR_METRO
-        blocos_ranges.append((bloco_indice, y0_global, y0_global + altura))
+        blocos_ranges.append(
+            (bloco_indice, y0_global, y0_global + altura * fator)
+        )
 
         formas = modelo.detectar(strip)
         pontos = ProvedorTrincaDetector.para_pontos(formas, "junta")
@@ -364,8 +420,10 @@ def detectar_estrutura(
                 y_centro = float(grupo["a"]) * x_ref + float(grupo["b"])
                 transversais.append(
                     {
-                        "y": y0_global + y_centro,
-                        "angulo_graus": float(grupo.get("angulo_graus") or 0.0),
+                        "y": y0_global + y_centro * fator,
+                        "angulo_graus": _angulo_para_display(
+                            float(grupo.get("angulo_graus") or 0.0), fator
+                        ),
                         "x0": float(grupo["t0"]),
                         "x1": float(grupo["t1"]),
                         "origem": "detectada",
@@ -384,9 +442,11 @@ def detectar_estrutura(
             candidatas, mm_por_px_x=mm_x, altura_px=altura
         )
         if par is not None:
+            esq = _reta_para_display(par[0], fator)
+            dir_ = _reta_para_display(par[1], fator)
             retas_por_bloco[bloco_indice] = (
-                icp_blocos.reta_para_global(par[0], y0_global),
-                icp_blocos.reta_para_global(par[1], y0_global),
+                icp_blocos.reta_para_global(esq, y0_global),
+                icp_blocos.reta_para_global(dir_, y0_global),
             )
 
     for junta in transversais:

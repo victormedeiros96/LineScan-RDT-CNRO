@@ -57,6 +57,7 @@ def _rodar_lote(
         2.0,
         8,
         faixa_alvo,
+        False,
     )
     resultado = ip._processar_lote(args)
     assert resultado is not None

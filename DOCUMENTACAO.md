@@ -915,6 +915,23 @@ O resultado do job guarda a calibração e um resumo estruturado do inventário
 (`inventario_resumo`: trecho e amostras) no banco; o inventário completo
 continua em `icp_placas.json` para consulta/transição.
 
+#### Escala de entrada do detector de juntas (RDT1-31)
+
+O modelo `trinca-detector` foi treinado nos **quadros crus** do LineScan
+(4096×1024 px = 4 m × 2 m, 512 px/m no eixo longitudinal). O display das faixas
+(4096×5120 px) aplica CLAHE e estica o eixo longitudinal para 1024 px/m. Alimentar
+o detector com o display mudava a escala/textura em relação ao treino e fazia a
+detecção achar poucas juntas em levantamentos reais (2 juntas em 100 m, RDT1-31).
+
+Para corrigir, no modo ICP o processamento grava, ao lado do display, uma **faixa
+crua** (`lote_XXXX_faixa_Y_infer.png`, 4096×2560 px = 4 m × 5 m, 512 px/m, sem
+CLAHE). O detector (`icp_juntas`) consome essa faixa crua; a geometria detectada é
+convertida para o display (fator 2 no eixo longitudinal) antes de chegar a
+`icp_placas`/`icp_blocos`, mantendo todo o restante do sistema em 1024 px/m. Sem a
+faixa crua (levantamentos antigos ou testes), o detector cai para o display com
+CLAHE. A faixa crua é registrada em `lote_*_meta.json` (`arquivo_infer`,
+`altura_infer_px`) e não é usada pelo IGG.
+
 Os pesos/modelo vêm do release público
 `https://github.com/victormedeiros96/trinca-detector-public/releases/tag/0.1`
 (`trinca_junta_limpo_ts.pt`, sha256 `901b70ad…c3e6`).
