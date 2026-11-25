@@ -29,6 +29,7 @@ longitudinal (no display do LineScan, 0,9765625 mm/px = 1024 px/m).
 """
 from __future__ import annotations
 
+import math
 from typing import Any, Iterable
 
 from juntas_detector import placas as jd_placas
@@ -40,6 +41,9 @@ NORMA_ICP = "DNIT 062/2004-PRO"
 TOLERANCIA_DUPLICADA_M = 0.15
 # Fração do tamanho médio aceita como erro ao validar um vão como múltiplo.
 TOLERANCIA_MULTIPLO = 0.35
+# Fração do período aceita como desvio de uma junta detectada para uma linha da
+# rede periódica. Acima disso a detecção é considerada espúria (RDT1-37).
+TOLERANCIA_REDE_FRACAO = 0.25
 LARGURA_MIN_M = 3.0
 LARGURA_MAX_M = 4.5
 
@@ -113,6 +117,118 @@ def _tamanho_medio(
     if len(validos) % 2:
         return validos[meio]
     return (validos[meio - 1] + validos[meio]) / 2.0
+
+
+def aplicar_rede_periodica(
+    transversais: Iterable[dict[str, Any]],
+    *,
+    periodo_px: float,
+    fase_px: float,
+    y_inicio: float,
+    y_fim: float,
+    mm_por_px_y: float,
+    tolerancia_frac: float = TOLERANCIA_REDE_FRACAO,
+    largura_px: float = 4096.0,
+) -> dict[str, Any]:
+    """Filtra as juntas pelo **filtro de espaçamento + rede periódica** (RDT1-37).
+
+    A detecção automática do ``trinca-detector`` produz juntas demais (duplicatas
+    da mesma linha e falsos positivos nas costuras de frame). Em vez de usar
+    diretamente cada transversal detectada, ajusta-se a **rede periódica**
+    ``fase + k·período`` (período e fase vindos de ``calibrar_por_juntas``):
+
+    * cada linha da rede recebe no máximo **uma** junta — a detectada de maior
+      cobertura lateral dentro de ``tolerancia_frac × período`` (resolve as
+      duplicatas, mantendo a de maior extensão lateral);
+    * detecções fora da tolerância de qualquer linha são **descartadas**
+      (falsos positivos / costuras);
+    * linhas da rede sem detecção viram juntas **virtuais**, com ângulo e
+      extensão lateral herdados da detecção mais próxima.
+
+    As juntas resultantes ficam alinhadas ao período (placas com comprimento
+    coerente, 3,5–5,1 m na BR-364) e o ``y`` é **snapado** à linha da rede.
+    Cada item mantém ``origem`` (``"detectada"``/``"virtual"``).
+
+    Devolve o mesmo formato de :func:`completar_transversais`: ``transversais``,
+    ``avisos``, ``tamanho_medio_m``, ``vaos_incoerentes`` e
+    ``n_detectadas_fora_rede``.
+    """
+    if periodo_px <= 0:
+        raise ValueError("O período da rede deve ser positivo.")
+
+    brutas = [dict(t) for t in transversais]
+    periodo_m = float(periodo_px) * float(mm_por_px_y) / 1000.0
+
+    tol = max(float(tolerancia_frac) * float(periodo_px), 0.0)
+    y0 = float(min(y_inicio, y_fim))
+    y1 = float(max(y_inicio, y_fim))
+
+    k_min = int(math.ceil((y0 - float(fase_px)) / float(periodo_px)))
+    k_max = int(math.floor((y1 - float(fase_px)) / float(periodo_px)))
+    linhas = [float(fase_px) + k * float(periodo_px) for k in range(k_min, k_max + 1)]
+
+    escolhidas: list[dict[str, Any] | None] = []
+    for linha in linhas:
+        candidatas = [
+            t for t in brutas if abs(float(t["y"]) - linha) <= tol
+        ]
+        if not candidatas:
+            escolhidas.append(None)
+            continue
+        # Maior cobertura lateral; desempate pela menor distância à linha.
+        melhor = max(
+            candidatas,
+            key=lambda t: (_cobertura(t), -abs(float(t["y"]) - linha)),
+        )
+        escolhidas.append(melhor)
+
+    # Fora da rede = detecção que não cai na tolerância de nenhuma linha. Uma
+    # duplicata absorvida por uma linha **não** conta como descartada.
+    fora_rede = sum(
+        1
+        for junta in brutas
+        if all(abs(float(junta["y"]) - linha) > tol for linha in linhas)
+    )
+
+    # Ângulo/cobertura para as virtuais: herda da detecção mais próxima.
+    detectadas_idx = [i for i, e in enumerate(escolhidas) if e is not None]
+
+    def _herdar(indice: int) -> dict[str, Any]:
+        if not detectadas_idx:
+            return {"angulo_graus": 0.0, "x0": 0.0, "x1": float(largura_px) - 1.0}
+        mais_proximo = min(detectadas_idx, key=lambda i: abs(i - indice))
+        base = escolhidas[mais_proximo] or {}
+        return {
+            "angulo_graus": float(base.get("angulo_graus") or 0.0),
+            "x0": float(base.get("x0", 0.0)),
+            "x1": float(base.get("x1", float(largura_px) - 1.0)),
+        }
+
+    finais: list[dict[str, Any]] = []
+    for indice, linha in enumerate(linhas):
+        escolhida = escolhidas[indice]
+        if escolhida is not None:
+            junta = dict(escolhida)
+            junta["y"] = linha
+            junta["origem"] = "detectada"
+        else:
+            junta = {"y": linha, "origem": "virtual", **_herdar(indice)}
+        finais.append(junta)
+
+    avisos: list[str] = []
+    if fora_rede:
+        avisos.append(
+            f"{fora_rede} junta(s) detectada(s) fora da rede periódica "
+            f"(±{tolerancia_frac * 100:.0f}% do período) descartada(s) como espúria(s)."
+        )
+
+    return {
+        "transversais": finais,
+        "avisos": avisos,
+        "tamanho_medio_m": round(periodo_m, 3),
+        "vaos_incoerentes": [],
+        "n_detectadas_fora_rede": fora_rede,
+    }
 
 
 def completar_transversais(
@@ -230,8 +346,18 @@ def montar_blocos(
     largura_max_m: float = LARGURA_MAX_M,
     x_ref: float = 2048.0,
     largura_virtual_m: float | None = None,
+    periodo_m: float | None = None,
+    fase_m: float = 0.0,
+    tolerancia_rede: float = TOLERANCIA_REDE_FRACAO,
+    largura_px: float = 4096.0,
 ) -> dict[str, Any]:
     """Fecha os blocos cruzando transversais (detectadas/virtuais) com longitudinais.
+
+    Quando ``periodo_m`` é informado, aplica o **filtro + rede periódica**
+    (RDT1-37): as juntas detectadas são consolidadas nas linhas de uma rede
+    ``fase + k·período`` e os vãos sem detecção viram juntas virtuais. Sem
+    ``periodo_m`` mantém o comportamento anterior (dedup 15 cm + completar vãos
+    múltiplos do tamanho médio).
 
     Devolve ``blocos`` (fechados, com polígono no strip), ``blocos_sem_mascara``
     (vão incoerente ou sem par de longitudinais), ``transversais`` usadas e
@@ -241,13 +367,36 @@ def montar_blocos(
     mm_por_px_x = mm_por_px_y if mm_por_px_x is None else float(mm_por_px_x)
     retas_por_bloco = retas_por_bloco or {}
     blocos_ranges = blocos_ranges or []
+    brutas = list(transversais)
 
-    completado = completar_transversais(
-        transversais,
-        mm_por_px_y=mm_por_px_y,
-        comprimento_max_m=comprimento_max_m,
-        tolerancia=tolerancia,
-    )
+    if periodo_m is not None and float(periodo_m) > 0:
+        if blocos_ranges:
+            y0_rede = min(float(b[1]) for b in blocos_ranges)
+            y1_rede = max(float(b[2]) for b in blocos_ranges)
+        elif brutas:
+            ys = [float(t["y"]) for t in brutas]
+            y0_rede, y1_rede = min(ys), max(ys)
+        else:
+            y0_rede = y1_rede = 0.0
+        periodo_px = float(periodo_m) * 1000.0 / mm_por_px_y
+        fase_px = float(fase_m or 0.0) * 1000.0 / mm_por_px_y
+        completado = aplicar_rede_periodica(
+            brutas,
+            periodo_px=periodo_px,
+            fase_px=fase_px,
+            y_inicio=y0_rede,
+            y_fim=y1_rede,
+            mm_por_px_y=mm_por_px_y,
+            tolerancia_frac=tolerancia_rede,
+            largura_px=largura_px,
+        )
+    else:
+        completado = completar_transversais(
+            brutas,
+            mm_por_px_y=mm_por_px_y,
+            comprimento_max_m=comprimento_max_m,
+            tolerancia=tolerancia,
+        )
     juntas = completado["transversais"]
     avisos = list(completado["avisos"])
     vaos_incoerentes = set(completado["vaos_incoerentes"])
@@ -370,4 +519,5 @@ def montar_blocos(
         "transversais": juntas,
         "tamanho_medio_m": completado["tamanho_medio_m"],
         "avisos": avisos,
+        "n_detectadas_fora_rede": int(completado.get("n_detectadas_fora_rede") or 0),
     }

@@ -584,6 +584,9 @@ def montar_inventario(
             retas_por_bloco=estrutura.get("retas_por_bloco"),
             blocos_ranges=estrutura.get("blocos_ranges"),
             comprimento_max_m=comprimento_max_m,
+            periodo_m=periodo_m,
+            fase_m=fase_m,
+            largura_px=float(LARGURA_FAIXA_PX),
         )
         placas = [
             _placa_de_bloco(
@@ -598,18 +601,28 @@ def montar_inventario(
         ]
         blocos_sem_mascara = saida["blocos_sem_mascara"]
         avisos = list(saida.get("avisos") or [])
-        calibracao = calibracao or {
-            "fonte": "detector_longitudinais",
-            "tamanho_medio_m": saida.get("tamanho_medio_m"),
-            "n_juntas": len(saida["transversais"]),
-            "n_juntas_virtuais": sum(
-                1 for t in saida["transversais"] if t.get("origem") == "virtual"
-            ),
-            "n_blocos_sem_mascara": len(blocos_sem_mascara),
-            "mm_por_px_x": mm_por_px_x,
-            "mm_por_px_y": mm_por_px_y,
-            "norma": NORMA_ICP,
-        }
+        n_virtuais = sum(
+            1 for t in saida["transversais"] if t.get("origem") == "virtual"
+        )
+        if calibracao is None:
+            calibracao = {
+                "fonte": "detector_longitudinais",
+                "mm_por_px_x": mm_por_px_x,
+                "mm_por_px_y": mm_por_px_y,
+                "norma": NORMA_ICP,
+            }
+        # A geometria usada nos blocos é a que passou pelo filtro/rede periódica
+        # (RDT1-37); sem isso a calibração continuaria mostrando as detecções
+        # brutas, que não são as juntas efetivamente aplicadas.
+        calibracao.setdefault("fonte", "detector_longitudinais")
+        calibracao["juntas_geometria"] = saida["transversais"]
+        calibracao["n_juntas"] = len(saida["transversais"])
+        calibracao["n_juntas_virtuais"] = n_virtuais
+        calibracao["n_juntas_fora_rede"] = int(
+            saida.get("n_detectadas_fora_rede") or 0
+        )
+        calibracao["n_blocos_sem_mascara"] = len(blocos_sem_mascara)
+        calibracao["tamanho_medio_m"] = saida.get("tamanho_medio_m")
         if not placas:
             avisos.append(
                 "Nenhum bloco fechado pelo cruzamento transversais × longitudinais; "

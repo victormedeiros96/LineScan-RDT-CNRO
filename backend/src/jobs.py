@@ -234,6 +234,10 @@ def _processar_placas_icp(
             faixas,
             estrutura=estrutura,
             calibracao=calibracao,
+            # Filtro + rede periódica (RDT1-37): consolida as transversais
+            # detectadas nas linhas do período estimado e completa as faltantes.
+            periodo_m=float(calibracao["periodo_m"]),
+            fase_m=float(calibracao.get("fase_m") or 0.0),
             mm_por_px_x=icp_placas.MM_POR_PX,
             mm_por_px_y=icp_placas.MM_POR_PX,
         )

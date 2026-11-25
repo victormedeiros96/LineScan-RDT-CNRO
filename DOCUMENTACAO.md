@@ -102,7 +102,7 @@ soft delete e/ou restore do backup (ver abaixo).
 | `igg_calculator.py` | Cálculo do Índice de Gravidade Global por quilômetro |
 | `icp_calculator.py` | Cálculo do ICP de pavimento rígido (método da concessionária) |
 | `icp_curvas.py` | Curvas e correções do ICP geradas das planilhas ICP Pedágio |
-| `icp_blocos.py` | Fecha os blocos do ICP cruzando transversais × longitudinais e completa juntas virtuais (RDT1-33) |
+| `icp_blocos.py` | Fecha os blocos do ICP cruzando transversais × longitudinais; filtra pela rede periódica e completa juntas virtuais (RDT1-33/37) |
 | `icp_import.py` | Importação das fichas de inspeção ICP (XLSX/CSV) e cálculo por amostra (RDT1-17) |
 | `icp_trecho.py` | ICP do trecho por inspeção total/amostragem e recálculo de `n` (RDT1-25) |
 | `icp_laudo.py` | Laudo do ICP com as seções do item 5.5 e amostras com ICP ≤ 40 (RDT1-26) |
@@ -815,13 +815,24 @@ O caminho preferido do job do rígido (quando não há calibração manual) roda
    consecutivas e as duas longitudinais. Cada bloco tem id (`P0001`…),
    contorno/máscara, `origem_juntas` e `origem_largura`
    (`detectada`/`virtual`).
-4. **Juntas faltantes (virtuais)** — mede-se o tamanho médio dos blocos já
-   fechados; para o vão entre duas juntas detectadas, `k = round(vão / médio)`.
-   Se `vão ≈ k × médio` (tolerância de 35 % do médio), o vão é dividido em `k`
-   partes iguais e as `k−1` juntas internas são marcadas `virtual`. Se não for
-   múltiplo coerente, **não força**: o trecho vai para `blocos_sem_mascara` e
-   gera aviso. A mesma ideia vale para a largura: sem par no bloco, reaproveita
-   a largura média/par mais próximo e marca `origem_largura = "virtual"`.
+4. **Filtro + rede periódica (RDT1-37)** — antes de fechar os blocos, as
+   transversais detectadas são consolidadas nas linhas da rede periódica
+   `fase + k·período` (período/fase vindos de `calibrar_por_juntas`, robusto a
+   juntas perdidas/duplicadas). Cada linha recebe **no máximo uma** junta — a de
+   maior cobertura lateral dentro de `±25%` do período (absorve duplicatas);
+   detecções fora dessa tolerância são **descartadas** como espúrias (custuras de
+   frame, falsos positivos); linhas sem detecção viram juntas **virtuais**
+   herdando ângulo/cobertura da detecção mais próxima. O `y` aplicado é o da
+   linha da rede, então as placas saem com comprimento coerente (~período;
+   3,5–5,1 m na BR-364). Sem `periodo_m`, mantém-se o caminho antigo abaixo.
+5. **Juntas faltantes (virtuais, caminho sem período)** — mede-se o tamanho médio
+   dos blocos já fechados; para o vão entre duas juntas detectadas,
+   `k = round(vão / médio)`. Se `vão ≈ k × médio` (tolerância de 35 % do médio),
+   o vão é dividido em `k` partes iguais e as `k−1` juntas internas são marcadas
+   `virtual`. Se não for múltiplo coerente, **não força**: o trecho vai para
+   `blocos_sem_mascara` e gera aviso. A mesma ideia vale para a largura: sem par
+   no bloco, reaproveita a largura média/par mais próximo e marca
+   `origem_largura = "virtual"`.
 5. **Inventário** — `montar_inventario(..., estrutura=...)` grava as placas
    fechadas em `icp_placas.json` com o polígono no strip, `pontos_faixa` e
    `poligono_m`, além de `blocos_sem_mascara` e `avisos`. Blocos sem máscara não
@@ -847,6 +858,14 @@ detectado para o display (×2) antes de fechar os blocos. Isso evita que as
 emendas de exposição entre frames (a cada 2 m) e do CLAHE por faixa (a cada
 5 m) sejam detectadas como juntas transversais. Sem o arquivo cru, cai no
 caminho antigo (faixas de display).
+
+**Filtro + rede periódica (RDT1-37).** Mesmo no strip cru sobram juntas
+espúrias. A calibração do inventário passa a expor `n_juntas` (linhas aplicadas),
+`n_juntas_virtuais` e `n_juntas_fora_rede` (detecções descartadas por não caírem
+na tolerância de nenhuma linha) e `juntas_geometria` já com as juntas
+efetivamente usadas nos blocos (detectadas ou virtuais). A aceitação é por
+`periodo_m`/`fase_m` no `montar_blocos`; o endpoint manual por `juntas_km`/
+`periodo_m` continua inalterado.
 
 
 **Sem alteração no IGG** — o caminho do IGG não usa `icp_blocos` nem as novas
