@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -310,11 +311,33 @@ def _agrupar_por_bloco(
 
 def _strip_do_bloco(
     base: Path, faixas_bloco: list[icp_placas.FaixaInfo]
-) -> tuple[Any, int, float]:
-    """Concatena as faixas de um bloco em uma imagem e devolve ``(strip, altura, km_inicio)``."""
+) -> tuple[Any, int, float, float]:
+    """Monta o strip do bloco para a detecção.
+
+    Prefere o bloco **cru** gravado em ``lote_XXXX_cru.png`` (cinza, sem CLAHE,
+    brilho normalizado por frame — RDT1-38), que mantém a escala de treino do
+    ``trinca-detector`` (512 px/m) e não tem as emendas de exposição/CLAHE.
+    Devolve ``(strip, altura_px, km_inicio, escala)``, onde ``escala`` converte
+    ``y`` do strip para o display (1024 px/m).
+    """
     import cv2
     import numpy as np
 
+    km_inicio = float(faixas_bloco[0].km_inicio)
+    bloco_indice = faixas_bloco[0].bloco_indice
+    caminho_cru = Path(base) / f"lote_{bloco_indice:04d}_cru.png"
+    if caminho_cru.is_file():
+        imagem = cv2.imread(str(caminho_cru), cv2.IMREAD_GRAYSCALE)
+        if imagem is not None and imagem.size:
+            span_m = (float(faixas_bloco[-1].km_fim) - km_inicio) * 1000.0
+            escala = (
+                icp_placas.PX_POR_METRO * span_m / float(imagem.shape[0])
+                if span_m > 0
+                else 2.0
+            )
+            return imagem, int(imagem.shape[0]), km_inicio, float(escala)
+
+    # Fallback: faixas de display (CLAHE, 1024 px/m), como antes.
     blocos = []
     altura_total = 0
     for faixa in faixas_bloco:
@@ -327,7 +350,8 @@ def _strip_do_bloco(
         blocos.append(imagem)
         altura_total += imagem.shape[0]
     strip = np.vstack(blocos)
-    return strip, altura_total, float(faixas_bloco[0].km_inicio)
+    return strip, altura_total, km_inicio, 1.0
+
 
 
 def _selecionar_par_longitudinais(
@@ -353,6 +377,25 @@ def _selecionar_par_longitudinais(
                 par = sorted([esq, dir_], key=lambda r: r.x(altura_px / 2.0))
                 melhor = (erro, (par[0], par[1]))
     return melhor[1] if melhor else None
+
+
+def _reta_para_escala(reta: Any, escala: float) -> Any:
+    """Converte uma ``Reta`` do strip cru (512 px/m) para o display (1024 px/m)."""
+    if escala == 1.0:
+        return reta
+    from juntas_detector.longitudinais import Reta
+
+    return Reta(
+        a=float(reta.a) / escala,
+        b=float(reta.b),
+        n=reta.n,
+        comp=float(reta.comp) * escala,
+        y0=float(reta.y0) * escala,
+        y1=float(reta.y1) * escala,
+        cobertura=reta.cobertura,
+        residuo=reta.residuo,
+        obs=[(a * escala, b * escala) for a, b in reta.obs],
+    )
 
 
 def detectar_estrutura(
@@ -402,10 +445,11 @@ def detectar_estrutura(
     for indice, (bloco_indice, faixas_bloco) in enumerate(grupos):
         if max_blocos is not None and indice >= max_blocos:
             break
-        strip, altura, km_inicio = _strip_do_bloco(base, faixas_bloco)
+        strip, altura, km_inicio, escala = _strip_do_bloco(base, faixas_bloco)
+        altura_display = altura * escala
         # ``km_inicio``/``km0`` estão em km; PX_POR_METRO é px/m → ×1.000.
         y0_global = (km_inicio - km0) * 1_000.0 * icp_placas.PX_POR_METRO
-        blocos_ranges.append((bloco_indice, y0_global, y0_global + altura))
+        blocos_ranges.append((bloco_indice, y0_global, y0_global + altura_display))
 
         formas = modelo.detectar(strip)
         pontos = ProvedorTrincaDetector.para_pontos(formas, "junta")
@@ -416,17 +460,22 @@ def detectar_estrutura(
             for grupo in grupos_geo:
                 if grupo.get("orientacao") != "h":
                     continue
-                if abs(float(grupo.get("angulo_graus") or 0.0)) > ANGULO_MAX_TRANSVERSAL:
+                # Ângulo no strip cru; converte para o display (y × escala).
+                angulo_cru = float(grupo.get("angulo_graus") or 0.0)
+                angulo = float(
+                    math.degrees(math.atan(math.tan(math.radians(angulo_cru)) / escala))
+                )
+                if abs(angulo) > ANGULO_MAX_TRANSVERSAL:
                     # Trinca diagonal não é junta transversal (DNIT 062/2004-PRO).
                     continue
-                y_centro = float(grupo["a"]) * x_ref + float(grupo["b"])
-                if not (-5.0 <= y_centro <= altura + 5.0):
+                y_centro_cru = float(grupo["a"]) * x_ref + float(grupo["b"])
+                if not (-5.0 <= y_centro_cru <= altura + 5.0):
                     # Ajuste extrapolado para fora do strip: não é junta.
                     continue
                 transversais.append(
                     {
-                        "y": y0_global + y_centro,
-                        "angulo_graus": float(grupo.get("angulo_graus") or 0.0),
+                        "y": y0_global + y_centro_cru * escala,
+                        "angulo_graus": angulo,
                         "x0": float(grupo["t0"]),
                         "x1": float(grupo["t1"]),
                         "origem": "detectada",
@@ -446,8 +495,8 @@ def detectar_estrutura(
         )
         if par is not None:
             retas_por_bloco[bloco_indice] = (
-                icp_blocos.reta_para_global(par[0], y0_global),
-                icp_blocos.reta_para_global(par[1], y0_global),
+                icp_blocos.reta_para_global(_reta_para_escala(par[0], escala), y0_global),
+                icp_blocos.reta_para_global(_reta_para_escala(par[1], escala), y0_global),
             )
 
     for junta in transversais:
