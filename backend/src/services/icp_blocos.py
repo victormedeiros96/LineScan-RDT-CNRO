@@ -471,9 +471,11 @@ def montar_blocos(
         y0, y1 = float(a["y"]), float(b["y"])
         km_ini = km0 + y0 * mm_por_px_y / 1_000_000.0
         km_fim = km0 + y1 * mm_por_px_y / 1_000_000.0
+        # km com 6 casas (precisão de ~1 mm). Arredondar em 3 casas (=1 m)
+        # deslocava a borda do bloco em até 0,5 m em relação à junta detectada.
         base = {
-            "km_inicio": round(km_ini, 3),
-            "km_fim": round(km_fim, 3),
+            "km_inicio": round(km_ini, 6),
+            "km_fim": round(km_fim, 6),
             "y_inicio": round(y0, 2),
             "y_fim": round(y1, 2),
         }
