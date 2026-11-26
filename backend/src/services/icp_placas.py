@@ -53,6 +53,50 @@ COMPRIMENTO_MIN_M = 3.0
 COMPRIMENTO_MAX_M = 6.0
 LARGURA_PLACA_M = 3.6
 
+# Qualidade mínima do ajuste periódico (R do estimador do juntas-detector) para
+# confiar na rede. Abaixo disso o período estimado não representa a junta real e
+# forçar a rede fabrica placas uniformes erradas (RDT1-42).
+R_MINIMO_REDE = 0.5
+
+
+def deve_aplicar_rede(
+    calibracao: dict[str, Any],
+    *,
+    r_minimo: float = R_MINIMO_REDE,
+    comprimento_min_m: float = COMPRIMENTO_MIN_M,
+    comprimento_max_m: float = COMPRIMENTO_MAX_M,
+) -> tuple[bool, str | None]:
+    """Diz se a rede periódica pode ser aplicada a partir da calibração.
+
+    Só confia na rede quando o ajuste tem qualidade (``R >= r_minimo``) **e** o
+    período estimado cai na faixa aceitável de placa. Caso contrário, o job deve
+    cair para as juntas detectadas + merge de placas curtas (#39), em vez de
+    forçar uma grade com período ruim. Devolve ``(usar, motivo)``.
+    """
+    r = calibracao.get("R")
+    periodo = calibracao.get("periodo_m")
+    if r is None:
+        return False, "rede sem R de ajuste"
+    try:
+        r_val = float(r)
+    except (TypeError, ValueError):
+        return False, f"R inválido: {r!r}"
+    if r_val < float(r_minimo):
+        return False, f"R baixo ({r_val:.2f} < {r_minimo:.2f})"
+    if periodo is None:
+        return False, "rede sem período"
+    try:
+        periodo_val = float(periodo)
+    except (TypeError, ValueError):
+        return False, f"período inválido: {periodo!r}"
+    if not (comprimento_min_m <= periodo_val <= comprimento_max_m):
+        return (
+            False,
+            f"período {periodo_val:.2f} m fora de "
+            f"[{comprimento_min_m:g}, {comprimento_max_m:g}] m",
+        )
+    return True, None
+
 
 @dataclass(frozen=True)
 class FaixaInfo:

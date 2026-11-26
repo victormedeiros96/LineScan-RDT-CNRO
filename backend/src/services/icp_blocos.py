@@ -439,6 +439,12 @@ def montar_blocos(
             tolerancia=tolerancia,
         )
     juntas = completado["transversais"]
+    # Expoe o km de cada junta efetivamente usada (útil p/ diagnóstico e UI); as
+    # juntas derivadas de completar/rede não trazem ``km`` por padrão.
+    for junta in juntas:
+        junta.setdefault(
+            "km", round(km0 + float(junta["y"]) * mm_por_px_y / 1_000_000.0, 6)
+        )
     avisos = list(completado["avisos"])
     vaos_incoerentes = set(completado["vaos_incoerentes"])
     if juntas_espurias:

@@ -15,6 +15,7 @@ from src.services.icp_placas import (
     FaixaInfo,
     agrupar_amostras,
     calibrar_por_juntas,
+    deve_aplicar_rede,
     gerar_placas,
     gerar_placas_por_juntas,
     listar_faixas,
@@ -395,3 +396,28 @@ def test_montar_inventario_por_juntas_registra_fonte_e_amostras() -> None:
     assert len(inventario["amostras"]) == 2
     assert inventario["amostras"][0]["n_placas"] == 20
     assert all(p["comprimento_m"] == pytest.approx(5.12, abs=1e-3) for p in inventario["placas"])
+
+
+# ── Guarda da rede periódica (RDT1-42) ─────────────────────────────────────
+def test_rede_periodica_nao_e_aplicada_com_r_baixo() -> None:
+    usar, motivo = deve_aplicar_rede({"periodo_m": 3.74, "R": 0.29})
+    assert usar is False
+    assert "R baixo" in motivo
+
+
+def test_rede_periodica_aplicada_com_bom_ajuste_e_periodo_plausivel() -> None:
+    usar, motivo = deve_aplicar_rede({"periodo_m": 5.0, "R": 0.85})
+    assert usar is True
+    assert motivo is None
+
+
+def test_rede_periodica_rejeitada_com_periodo_fora_da_faixa() -> None:
+    usar, motivo = deve_aplicar_rede({"periodo_m": 7.5, "R": 0.9})
+    assert usar is False
+    assert "fora de" in motivo
+
+
+def test_rede_periodica_rejeitada_sem_r() -> None:
+    usar, motivo = deve_aplicar_rede({"periodo_m": 5.0})
+    assert usar is False
+    assert "R" in motivo
