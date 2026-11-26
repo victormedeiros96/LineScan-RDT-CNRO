@@ -171,6 +171,18 @@ export function getPreviewUrl(viagemNome: string, arquivo: string): string {
   return `/api/pastas/faixa/${encodeURIComponent(viagemNome)}/${encodeURIComponent(arquivo)}/preview`
 }
 
+export function getIntervaloUrl(
+  viagemNome: string,
+  kmInicio: number,
+  kmFim: number,
+): string {
+  const params = new URLSearchParams({
+    km_inicio: String(kmInicio),
+    km_fim: String(kmFim),
+  })
+  return `/api/pastas/intervalo/${encodeURIComponent(viagemNome)}?${params.toString()}`
+}
+
 export async function executarInferencia(
   viagemNome: string,
   tipoModelo = 'igg',
