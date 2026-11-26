@@ -567,9 +567,11 @@ def _placa_de_bloco(
 
     return {
         "id": f"P{indice:04d}",
-        "km": round((km_ini + km_fim) / 2.0, 3),
-        "km_inicio": round(km_ini, 3),
-        "km_fim": round(km_fim, 3),
+        # 6 casas (~1 mm): manter a borda alinhada à junta detectada. Com 3 casas
+        # (1 m) a placa deslocava até 0,5 m no overlay (ver icp_blocos.montar_blocos).
+        "km": round((km_ini + km_fim) / 2.0, 6),
+        "km_inicio": round(km_ini, 6),
+        "km_fim": round(km_fim, 6),
         "comprimento_m": round(float(bloco["comprimento_m"]), 3),
         "largura_m": round(float(bloco["largura_m"]), 3),
         "bloco_indice": bloco.get("bloco_indice") or faixa_principal.bloco_indice,
