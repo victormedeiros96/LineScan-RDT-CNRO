@@ -198,6 +198,31 @@ function agruparBlocos(faixas: FaixaInfo[]): BlocoInfo[] {
     })
 }
 
+interface JuntaGeometria {
+  km: number
+  origem?: string
+  bloco_indice?: number
+}
+
+/**
+ * Juntas efetivamente aplicadas nos blocos (detectadas/virtuais), lidas da
+ * calibração do inventário. Servem para conferir se os limites dos blocos
+ * coincidem com as juntas reais na imagem.
+ */
+function juntasDoInventario(inventario: IcpInventario | null): JuntaGeometria[] {
+  const calibracao = inventario?.calibracao as
+    | { juntas_geometria?: unknown }
+    | undefined
+  const brutas = calibracao?.juntas_geometria
+  if (!Array.isArray(brutas)) return []
+  return brutas.filter(
+    (junta): junta is JuntaGeometria =>
+      typeof junta === 'object' &&
+      junta !== null &&
+      typeof (junta as { km?: unknown }).km === 'number',
+  )
+}
+
 function corDeteccao(classe: string): string {
   const c = classe.toLowerCase()
   if (c.includes('panela')) return '#FF0000'
@@ -338,6 +363,28 @@ export function IcpView() {
     }
     return deteccoes
   }, [analise, faixaAtual])
+
+  const juntasGeometria = useMemo(
+    () => juntasDoInventario(inventario),
+    [inventario],
+  )
+
+  const juntasDoItem = useMemo(() => {
+    if (!faixaAtual || faixaAtual.km_inicio === null || faixaAtual.km_fim === null) {
+      return []
+    }
+    const inicio = faixaAtual.km_inicio
+    const fim = faixaAtual.km_fim
+    const span = fim - inicio
+    if (span <= 0) return []
+    return juntasGeometria
+      .filter((junta) => junta.km >= inicio && junta.km <= fim)
+      .map((junta) => ({
+        km: junta.km,
+        origem: junta.origem,
+        x: faixaAtual.altura_px - ((junta.km - inicio) / span) * faixaAtual.altura_px,
+      }))
+  }, [juntasGeometria, faixaAtual])
 
   const resumo = useMemo(() => {
     if (resultados.length === 0) return null
@@ -1155,7 +1202,9 @@ export function IcpView() {
               <p className="description">
                 Cada bloco é o cruzamento de duas transversais com as duas longitudinais
                 (DNIT 062/2004-PRO). Contorno tracejado = fechamento com linha virtual
-                (junta estimada pelo tamanho médio). Use Ctrl/Cmd + roda para ampliar.
+                (junta estimada pelo tamanho médio). Linhas verticais = juntas detectadas
+                (ciano) e virtuais (laranja) aplicadas nos blocos. Use Ctrl/Cmd + roda
+                para ampliar.
               </p>
             </div>
             <div className="km-selector-container">
@@ -1245,6 +1294,34 @@ export function IcpView() {
                         strokeDasharray="14 10"
                         opacity={0.85}
                       />
+                    )
+                  })}
+                  {juntasDoItem.map((junta, index) => {
+                    const cor = junta.origem === 'virtual' ? '#F59E0B' : '#22D3EE'
+                    return (
+                      <g key={`junta-${index}`}>
+                        <line
+                          x1={junta.x}
+                          y1={0}
+                          x2={junta.x}
+                          y2={4096}
+                          stroke={cor}
+                          strokeWidth={5}
+                          strokeDasharray={junta.origem === 'virtual' ? '20 12' : undefined}
+                          opacity={0.9}
+                        />
+                        <text
+                          x={junta.x + 8}
+                          y={34}
+                          fill={cor}
+                          fontSize={30}
+                          fontWeight={700}
+                          fontFamily="monospace"
+                          transform={`rotate(90 ${junta.x + 8} 34)`}
+                        >
+                          {formatarNumero(junta.km, 3)}
+                        </text>
+                      </g>
                     )
                   })}
                   {placasDaFaixa.map((placa) => {
