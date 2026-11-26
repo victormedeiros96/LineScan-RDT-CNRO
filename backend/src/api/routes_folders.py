@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -400,14 +401,53 @@ async def listar_faixas(viagem_nome: str, settings: Settings = Depends(get_setti
     }
 
 
+_BLOCO_20M_RE = re.compile(r"^lote_(\d+)_20m\.png$")
+
+
+def _montar_bloco_20m(base: Path, arquivo: str) -> Path | None:
+    """Gera sob demanda a imagem de 20 m empilhando as faixas de 5 m do bloco.
+
+    Só atua em nomes ``lote_XXXX_20m.png``. A faixa 0 é o topo (menor KM), então
+    empilhar as faixas em ordem crescente reproduz os 20 m do bloco sem
+    reprocessar a viagem. Serve apenas à visualização; a detecção/cálculo do ICP
+    continua por faixa de 5 m.
+    """
+    casamento = _BLOCO_20M_RE.match(arquivo)
+    if not casamento:
+        return None
+    indice = int(casamento.group(1))
+    faixas = list(base.glob(f"lote_{indice:04d}_faixa_*.png"))
+    if not faixas:
+        return None
+    faixas.sort(key=lambda p: int(p.stem.rsplit("_", 1)[-1]))
+    import os
+
+    import cv2
+    import numpy as np
+
+    imagens = [img for img in (cv2.imread(str(p)) for p in faixas) if img is not None]
+    if not imagens:
+        return None
+    destino = base / arquivo
+    temporario = destino.with_name(destino.name + ".tmp.png")
+    cv2.imwrite(str(temporario), np.vstack(imagens))
+    os.replace(temporario, destino)
+    return destino
+
+
 @router.get("/faixa/{viagem_nome}/{arquivo}")
 async def servir_faixa(viagem_nome: str, arquivo: str, request: Request, settings: Settings = Depends(get_settings_dep)):
     """Serve uma faixa de 5m (PNG). Com cache HTTP (ETag/Last-Modified) para o
-    navegador reutilizar o download ao navegar entre faixas."""
+    navegador reutilizar o download ao navegar entre faixas.
+
+    Se ``arquivo`` for ``lote_XXXX_20m.png`` e ainda não existir, monta o bloco de
+    20 m a partir das faixas de 5 m já geradas (visualização)."""
     base = _resolver_viagem(settings, viagem_nome)
     if base is None:
         raise HTTPException(404, "Viagem não encontrada")
     caminho = base / arquivo
+    if not caminho.is_file():
+        caminho = _montar_bloco_20m(base, arquivo) or caminho
     if not caminho.is_file():
         raise HTTPException(404, "Faixa não encontrada")
     stat = caminho.stat()

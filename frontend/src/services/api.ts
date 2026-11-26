@@ -61,6 +61,7 @@ export interface FaixaInfo {
   km_inicio: number | null
   km_fim: number | null
   altura_px: number
+  bloco_indice?: number
 }
 
 export interface LoteInfo {

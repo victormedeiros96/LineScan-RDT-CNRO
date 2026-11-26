@@ -20,6 +20,7 @@ import {
 import type { FaixaInfo, IcpPlacaDetalhe } from '../services/api'
 import type {
   AnaliseResponse,
+  Deteccao,
   IcpInventario,
   IcpLaudo,
   IcpLaudoItem,
@@ -103,10 +104,20 @@ interface Retangulo {
   height: number
 }
 
-/** Caixa da imagem original (x lateral, y = KM) → canvas rotacionado 90°. */
-function paraCanvas(x1: number, y1: number, x2: number, y2: number): Retangulo {
+/**
+ * Caixa da imagem original (x lateral, y = KM) → canvas rotacionado 90°.
+ * ``altura`` é a altura de display da imagem atual (5120 px = 5 m por faixa,
+ * 4 × 5120 px = 20 m por bloco).
+ */
+function paraCanvas(
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  altura = 5120,
+): Retangulo {
   return {
-    x: 5120 - y2,
+    x: altura - y2,
     y: x1,
     width: Math.max(1, y2 - y1),
     height: Math.max(1, x2 - x1),
@@ -139,7 +150,52 @@ function placaNaFaixa(placa: IcpPlaca, faixa: FaixaInfo): Retangulo | null {
   const fim = Math.min(placa.km_fim, faixa.km_fim)
   const y1 = ((inicio - faixa.km_inicio) / alturaKm) * faixa.altura_px
   const y2 = ((fim - faixa.km_inicio) / alturaKm) * faixa.altura_px
-  return paraCanvas(x1, y1, x2, y2)
+  return paraCanvas(x1, y1, x2, y2, faixa.altura_px)
+}
+
+interface BlocoInfo extends FaixaInfo {
+  faixas: FaixaInfo[]
+}
+
+/** Faixas de 5 m que compõem um item (bloco de 20 m ou uma faixa só). */
+function faixasDoItem(item: FaixaInfo): FaixaInfo[] {
+  return (item as BlocoInfo).faixas ?? [item]
+}
+
+/**
+ * Agrupa as faixas de 5 m em blocos de 20 m (4 faixas). O bloco vira um item
+ * "faixa-like" cuja imagem é a união das faixas: `lote_XXXX_20m.png`, gerada sob
+ * demanda no backend. Só muda a visualização; a detecção/cálculo do ICP continua
+ * por faixa de 5 m.
+ */
+function agruparBlocos(faixas: FaixaInfo[]): BlocoInfo[] {
+  const porBloco = new Map<number, FaixaInfo[]>()
+  faixas.forEach((faixa, posicao) => {
+    const indice = faixa.bloco_indice ?? posicao
+    const lista = porBloco.get(indice) ?? []
+    lista.push(faixa)
+    porBloco.set(indice, lista)
+  })
+  return Array.from(porBloco.entries())
+    .sort((a, b) => a[0] - b[0])
+    .map(([indice, lista]) => {
+      const ordenadas = [...lista].sort((a, b) => (a.km_inicio ?? 0) - (b.km_inicio ?? 0))
+      const comKm = ordenadas.filter((f) => f.km_inicio !== null && f.km_fim !== null)
+      const kmInicio = comKm.length
+        ? Math.min(...comKm.map((f) => f.km_inicio as number))
+        : null
+      const kmFim = comKm.length ? Math.max(...comKm.map((f) => f.km_fim as number)) : null
+      const altura = ordenadas.reduce((acc, f) => acc + (f.altura_px || 0), 0)
+      return {
+        arquivo: `lote_${String(indice).padStart(4, '0')}_20m.png`,
+        faixa_index: 0,
+        km_inicio: kmInicio,
+        km_fim: kmFim,
+        altura_px: altura || ordenadas.length * 5120,
+        bloco_indice: indice,
+        faixas: ordenadas,
+      }
+    })
 }
 
 function corDeteccao(classe: string): string {
@@ -189,6 +245,7 @@ export function IcpView() {
 
   const [expandidos, setExpandidos] = useState<Set<string>>(new Set())
   const [faixaSelecionada, setFaixaSelecionada] = useState('')
+  const [modoVisao, setModoVisao] = useState<'bloco' | 'faixa'>('bloco')
   const [placaSelecionada, setPlacaSelecionada] = useState<string | null>(null)
   const [detalhePlaca, setDetalhePlaca] = useState<IcpPlacaDetalhe | null>(null)
   const [carregandoPlaca, setCarregandoPlaca] = useState(false)
@@ -206,15 +263,22 @@ export function IcpView() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [imgSize, setImgSize] = useState<{ w: number; h: number } | null>(null)
 
-  const faixaAtual = useMemo(
-    () => faixas.find((f) => f.arquivo === faixaSelecionada) ?? null,
-    [faixas, faixaSelecionada],
-  )
+  const blocos = useMemo(() => agruparBlocos(faixas), [faixas])
 
   const faixasComPlacas = useMemo(() => {
     if (!inventario || faixas.length === 0) return [] as FaixaInfo[]
+    if (modoVisao === 'bloco') {
+      return blocos.filter((bloco) =>
+        inventario.placas.some((placa) => sobrepoeFaixa(placa, bloco)),
+      )
+    }
     return faixas.filter((faixa) => inventario.placas.some((placa) => sobrepoeFaixa(placa, faixa)))
-  }, [inventario, faixas])
+  }, [inventario, faixas, blocos, modoVisao])
+
+  const faixaAtual = useMemo(
+    () => faixasComPlacas.find((f) => f.arquivo === faixaSelecionada) ?? null,
+    [faixasComPlacas, faixaSelecionada],
+  )
 
   const indiceFaixa = useMemo(
     () => faixasComPlacas.findIndex((faixa) => faixa.arquivo === faixaSelecionada),
@@ -243,8 +307,36 @@ export function IcpView() {
 
   const deteccoesDaFaixa = useMemo(() => {
     if (!analise || !faixaAtual) return []
-    const imagem = analise.imagens.find((img) => img.arquivo === faixaAtual.arquivo)
-    return imagem ? imagem.deteccoes : []
+    const componentes = faixasDoItem(faixaAtual)
+    if (componentes.length === 1 && componentes[0].arquivo === faixaAtual.arquivo) {
+      const imagem = analise.imagens.find((img) => img.arquivo === faixaAtual.arquivo)
+      return imagem ? imagem.deteccoes : []
+    }
+    // Bloco de 20 m: desloca o y de cada detecção (coordenadas da faixa de 5 m)
+    // para o espaço do bloco, conforme a posição da faixa dentro dele.
+    const spanKm =
+      faixaAtual.km_inicio !== null && faixaAtual.km_fim !== null
+        ? faixaAtual.km_fim - faixaAtual.km_inicio
+        : 0
+    const deteccoes: Deteccao[] = []
+    for (const componente of componentes) {
+      const imagem = analise.imagens.find((img) => img.arquivo === componente.arquivo)
+      if (!imagem) continue
+      const inicioKm = componente.km_inicio ?? faixaAtual.km_inicio ?? 0
+      const offset =
+        spanKm > 0
+          ? ((inicioKm - (faixaAtual.km_inicio ?? 0)) / spanKm) * faixaAtual.altura_px
+          : 0
+      for (const det of imagem.deteccoes) {
+        if (!det.global_box || det.global_box.length < 4) {
+          deteccoes.push(det)
+          continue
+        }
+        const [x1, y1, x2, y2] = det.global_box
+        deteccoes.push({ ...det, global_box: [x1, y1 + offset, x2, y2 + offset] })
+      }
+    }
+    return deteccoes
   }, [analise, faixaAtual])
 
   const resumo = useMemo(() => {
@@ -1076,7 +1168,16 @@ export function IcpView() {
               >
                 ◀ Anterior
               </button>
-              <label>Faixa:</label>
+              <label>Visão:</label>
+              <select
+                value={modoVisao}
+                onChange={(e) => setModoVisao(e.target.value as 'bloco' | 'faixa')}
+                title="Bloco de 20 m (4 faixas) ou faixa de 5 m"
+              >
+                <option value="bloco">Bloco 20 m</option>
+                <option value="faixa">Faixa 5 m</option>
+              </select>
+              <label>Trecho:</label>
               <select
                 value={faixaSelecionada}
                 onChange={(e) => {
@@ -1117,7 +1218,10 @@ export function IcpView() {
                 }}
               >
                 <canvas ref={canvasRef} />
-                <svg className="annotation-svg-layer" viewBox="0 0 5120 4096">
+                <svg
+                  className="annotation-svg-layer"
+                  viewBox={`0 0 ${faixaAtual?.altura_px ?? 5120} 4096`}
+                >
                   {deteccoesDaFaixa.map((det, index) => {
                     if (!det.global_box || det.global_box.length < 4) return null
                     const [x1, y1, x2, y2] = det.global_box
@@ -1126,6 +1230,7 @@ export function IcpView() {
                       Math.min(y1, y2),
                       Math.max(x1, x2),
                       Math.max(y1, y2),
+                      faixaAtual?.altura_px ?? 5120,
                     )
                     return (
                       <rect
