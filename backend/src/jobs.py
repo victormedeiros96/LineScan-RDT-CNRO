@@ -9,7 +9,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from src.core.config import get_settings
 from src.services import icp_juntas, icp_placas, job_store, viagem_store
-from src.services.image_processor import processar_pasta, LARGURA_PX
+from src.services.image_processor import processar_pasta
 from src.services.inference_pipeline import InferencePipeline
 from src.services.model_loader import listar_modelos
 from src.utils.tipo_pista import normalizar_tipo_pista
@@ -230,14 +230,28 @@ def _processar_placas_icp(
         calibracao["juntas_geometria"] = estrutura["transversais"]
 
     if estrutura is not None:
+        # Só força a rede periódica (RDT1-37) quando o período estimado é
+        # confiável. Com ajuste ruim (R baixo) ou período fora de 3–6 m, cai
+        # para as juntas detectadas + merge de placas curtas (#39) — senão a
+        # grade fabrica placas uniformes erradas (RDT1-42).
+        usar_rede, motivo = icp_placas.deve_aplicar_rede(calibracao)
+        calibracao["rede_aplicada"] = usar_rede
+        if not usar_rede:
+            calibracao["motivo_rede"] = motivo
+            logger.info(
+                "ICP viagem %s: rede periódica não aplicada (%s); usando juntas "
+                "detectadas + merge.",
+                destino.name,
+                motivo,
+            )
         inventario = icp_placas.montar_inventario(
             faixas,
             estrutura=estrutura,
             calibracao=calibracao,
-            # Filtro + rede periódica (RDT1-37): consolida as transversais
-            # detectadas nas linhas do período estimado e completa as faltantes.
-            periodo_m=float(calibracao["periodo_m"]),
-            fase_m=float(calibracao.get("fase_m") or 0.0),
+            # Quando confiável, consolida as transversais nas linhas do período
+            # estimado e completa as faltantes; senão usa as juntas detectadas.
+            periodo_m=float(calibracao["periodo_m"]) if usar_rede else None,
+            fase_m=float(calibracao.get("fase_m") or 0.0) if usar_rede else 0.0,
             mm_por_px_x=icp_placas.MM_POR_PX,
             mm_por_px_y=icp_placas.MM_POR_PX,
         )
@@ -344,7 +358,6 @@ def _extrair_zip(viagem: str, zip_path: str) -> dict:
 
     from src.api.routes_uploads import ALLOWED_EXTS, EXTENSOES_IMAGEM
 
-    settings = get_settings()
     zip_file = Path(zip_path)
     origem = zip_file.parent
     destino = origem
