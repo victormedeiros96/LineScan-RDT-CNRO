@@ -293,6 +293,36 @@ def completar_transversais(
     }
 
 
+def filtrar_juntas_espurias(
+    transversais: Iterable[dict[str, Any]],
+    *,
+    mm_por_px_y: float,
+    comprimento_min_m: float = 3.0,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Descarta juntas detectadas que gerariam uma placa curta demais (espúrias).
+
+    Regra de campo (RDT1-41): percorre as juntas em ordem e, ancorando na última
+    junta **mantida**, descarta qualquer detecção que fique a menos de
+    ``comprimento_min_m`` dela. Uma junta falsa dentro de uma placa é removida e
+    a placa se funde com a vizinha (ex.: 0,92 m + 4,14 m → 5,06 m), em vez de
+    gerar um bloco minúsculo. Devolve ``(mantidas, descartadas)``.
+    """
+    ordenadas = sorted((dict(t) for t in transversais), key=lambda t: float(t["y"]))
+    if not ordenadas:
+        return [], []
+    mantidas = [ordenadas[0]]
+    descartadas: list[dict[str, Any]] = []
+    for junta in ordenadas[1:]:
+        distancia_m = (
+            float(junta["y"]) - float(mantidas[-1]["y"])
+        ) * float(mm_por_px_y) / 1000.0
+        if distancia_m < float(comprimento_min_m):
+            descartadas.append(junta)
+            continue
+        mantidas.append(junta)
+    return mantidas, descartadas
+
+
 def _bloco_em(y: float, blocos_ranges: list[tuple[int, float, float]]) -> int | None:
     for indice, y0, y1 in blocos_ranges:
         if y0 <= y < y1:
@@ -340,7 +370,8 @@ def montar_blocos(
     mm_por_px_x: float | None = None,
     retas_por_bloco: dict[int, tuple[Reta, Reta]] | None = None,
     blocos_ranges: list[tuple[int, float, float]] | None = None,
-    comprimento_max_m: float = 9.0,
+    comprimento_max_m: float = 6.0,
+    comprimento_min_m: float = 3.0,
     tolerancia: float = TOLERANCIA_MULTIPLO,
     largura_min_m: float = LARGURA_MIN_M,
     largura_max_m: float = LARGURA_MAX_M,
@@ -367,7 +398,9 @@ def montar_blocos(
     mm_por_px_x = mm_por_px_y if mm_por_px_x is None else float(mm_por_px_x)
     retas_por_bloco = retas_por_bloco or {}
     blocos_ranges = blocos_ranges or []
+
     brutas = list(transversais)
+    juntas_espurias: list[dict[str, Any]] = []
 
     if periodo_m is not None and float(periodo_m) > 0:
         if blocos_ranges:
@@ -391,6 +424,14 @@ def montar_blocos(
             largura_px=largura_px,
         )
     else:
+        # Descarta juntas que gerariam placas curtas demais antes de consolidar
+        # (RDT1-41). Sem isso uma detecção falsa a poucos centímetros de outra
+        # vira um bloco minúsculo em vez de fundir com a placa vizinha.
+        brutas, juntas_espurias = filtrar_juntas_espurias(
+            brutas,
+            mm_por_px_y=mm_por_px_y,
+            comprimento_min_m=comprimento_min_m,
+        )
         completado = completar_transversais(
             brutas,
             mm_por_px_y=mm_por_px_y,
@@ -400,6 +441,12 @@ def montar_blocos(
     juntas = completado["transversais"]
     avisos = list(completado["avisos"])
     vaos_incoerentes = set(completado["vaos_incoerentes"])
+    if juntas_espurias:
+        avisos.insert(
+            0,
+            f"{len(juntas_espurias)} junta(s) descartada(s) por gerar "
+            f"placa < {comprimento_min_m:g} m.",
+        )
 
     if largura_virtual_m is None:
         larguras = [
@@ -520,4 +567,5 @@ def montar_blocos(
         "tamanho_medio_m": completado["tamanho_medio_m"],
         "avisos": avisos,
         "n_detectadas_fora_rede": int(completado.get("n_detectadas_fora_rede") or 0),
+        "n_juntas_espurias": len(juntas_espurias),
     }
