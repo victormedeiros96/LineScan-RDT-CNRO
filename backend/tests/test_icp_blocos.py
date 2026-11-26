@@ -382,3 +382,36 @@ def test_montar_inventario_com_rede_periodica_aplica_na_calibracao() -> None:
         "detectada",
         "virtual",
     ]
+
+
+def test_junta_espuria_curta_e_descartada_e_placa_funde() -> None:
+    """RDT1-41: junta que gera placa < 3 m (0,92 m) é descartada e funde.
+
+    Juntas em 0, 5,04, 5,96 e 10,10 m: a de 5,96 m fica só 0,92 m depois de
+    5,04 m, então é espúria. As placas viram 5,04 m e 5,06 m (a 3ª+4ª somadas).
+    """
+    r = icp_blocos.montar_blocos(
+        _transversais(0.0, 5.04, 5.96, 10.10),
+        km0=0.0,
+        mm_por_px_y=MM,
+        retas_por_bloco={0: _retas()},
+        blocos_ranges=[(0, 0.0, _px(15.0))],
+    )
+
+    assert r["n_juntas_espurias"] == 1
+    assert [round(b["comprimento_m"], 2) for b in r["blocos"]] == [5.04, 5.06]
+    assert any("descartada" in a for a in r["avisos"])
+
+
+def test_junta_espuria_repetida_ancora_na_ultima_mantida() -> None:
+    """Várias juntas coladas (0, 6, 6,5, 7, 12) → mantém 0, 6 e 12."""
+    r = icp_blocos.montar_blocos(
+        _transversais(0.0, 6.0, 6.5, 7.0, 12.0),
+        km0=0.0,
+        mm_por_px_y=MM,
+        retas_por_bloco={0: _retas()},
+        blocos_ranges=[(0, 0.0, _px(15.0))],
+    )
+
+    assert r["n_juntas_espurias"] == 2
+    assert [round(b["comprimento_m"], 2) for b in r["blocos"]] == [6.0, 6.0]

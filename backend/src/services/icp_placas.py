@@ -47,7 +47,10 @@ PX_POR_METRO = 1024.0
 MM_POR_PX = 1000.0 / PX_POR_METRO  # 0.9765625 mm/px (isotrópico)
 
 TAMANHO_AMOSTRA = 20
-COMPRIMENTO_MAX_M = 9.0
+# Faixa aceitável de comprimento de placa (decisão de campo, RDT1-41): placas
+# fora de [3, 6] m indicam junta espúria (curta) ou junta faltante (longa).
+COMPRIMENTO_MIN_M = 3.0
+COMPRIMENTO_MAX_M = 6.0
 LARGURA_PLACA_M = 3.6
 
 
@@ -547,6 +550,7 @@ def montar_inventario(
     fase_m: float = 0.0,
     largura_placa_m: float = LARGURA_PLACA_M,
     comprimento_max_m: float = COMPRIMENTO_MAX_M,
+    comprimento_min_m: float = COMPRIMENTO_MIN_M,
     tamanho_amostra: int = TAMANHO_AMOSTRA,
     angulo_graus: float = 0.0,
     mm_por_px_x: float = MM_POR_PX,
@@ -584,6 +588,7 @@ def montar_inventario(
             retas_por_bloco=estrutura.get("retas_por_bloco"),
             blocos_ranges=estrutura.get("blocos_ranges"),
             comprimento_max_m=comprimento_max_m,
+            comprimento_min_m=comprimento_min_m,
             periodo_m=periodo_m,
             fase_m=fase_m,
             largura_px=float(LARGURA_FAIXA_PX),
@@ -621,6 +626,9 @@ def montar_inventario(
         calibracao["n_juntas_fora_rede"] = int(
             saida.get("n_detectadas_fora_rede") or 0
         )
+        calibracao["n_juntas_espurias"] = int(saida.get("n_juntas_espurias") or 0)
+        calibracao["comprimento_min_m"] = comprimento_min_m
+        calibracao["comprimento_max_m"] = comprimento_max_m
         calibracao["n_blocos_sem_mascara"] = len(blocos_sem_mascara)
         calibracao["tamanho_medio_m"] = saida.get("tamanho_medio_m")
         if not placas:
