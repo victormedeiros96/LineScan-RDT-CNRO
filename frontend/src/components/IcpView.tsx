@@ -4,6 +4,7 @@ import {
   carregarAnalise,
   criarMarcacaoIcp,
   getConcatenadaUrl,
+  getIntervaloUrl,
   getIcpExportUrl,
   getIcpLaudoCsvUrl,
   getIcpRecorteUrl,
@@ -223,6 +224,44 @@ function juntasDoInventario(inventario: IcpInventario | null): JuntaGeometria[] 
   )
 }
 
+interface JanelaInfo extends FaixaInfo {
+  faixas: FaixaInfo[]
+}
+
+/**
+ * Agrupa N placas consecutivas numa janela contígua (km_inicio da primeira à
+ * km_fim da última). A imagem da janela é recortada no backend
+ * (`/pastas/intervalo`) e serve ao modo de inspeção (N placas numa imagem só).
+ */
+function agruparJanelas(
+  placas: IcpPlaca[],
+  faixas: FaixaInfo[],
+  tamanho: number,
+): JanelaInfo[] {
+  const passo = Math.max(1, Math.floor(tamanho))
+  const ordenadas = [...placas].sort((a, b) => a.km_inicio - b.km_inicio)
+  const janelas: JanelaInfo[] = []
+  for (let inicio = 0; inicio < ordenadas.length; inicio += passo) {
+    const grupo = ordenadas.slice(inicio, inicio + passo)
+    if (grupo.length === 0) continue
+    const kmInicio = grupo[0].km_inicio
+    const kmFim = grupo[grupo.length - 1].km_fim
+    const componentes = faixas.filter(
+      (faixa) => faixa.km_inicio !== null && faixa.km_fim !== null && faixa.km_fim > kmInicio && faixa.km_inicio < kmFim,
+    )
+    const altura = Math.round((kmFim - kmInicio) * 1000 * 1024) // 1024 px/m (display)
+    janelas.push({
+      arquivo: `intervalo_${inicio}`,
+      faixa_index: 0,
+      km_inicio: kmInicio,
+      km_fim: kmFim,
+      altura_px: altura > 0 ? altura : componentes.length * 5120,
+      faixas: componentes,
+    })
+  }
+  return janelas
+}
+
 function corDeteccao(classe: string): string {
   const c = classe.toLowerCase()
   if (c.includes('panela')) return '#FF0000'
@@ -270,7 +309,9 @@ export function IcpView() {
 
   const [expandidos, setExpandidos] = useState<Set<string>>(new Set())
   const [faixaSelecionada, setFaixaSelecionada] = useState('')
-  const [modoVisao, setModoVisao] = useState<'bloco' | 'faixa'>('bloco')
+  const [modoVisao, setModoVisao] = useState<'bloco' | 'faixa' | 'inspecao'>('bloco')
+  const [placasPorVez, setPlacasPorVez] = useState(4)
+  const [opacidadeMascara, setOpacidadeMascara] = useState(60)
   const [placaSelecionada, setPlacaSelecionada] = useState<string | null>(null)
   const [detalhePlaca, setDetalhePlaca] = useState<IcpPlacaDetalhe | null>(null)
   const [carregandoPlaca, setCarregandoPlaca] = useState(false)
@@ -290,15 +331,25 @@ export function IcpView() {
 
   const blocos = useMemo(() => agruparBlocos(faixas), [faixas])
 
+  const janelas = useMemo(
+    () => agruparJanelas(inventario?.placas ?? [], faixas, placasPorVez),
+    [inventario, faixas, placasPorVez],
+  )
+
   const faixasComPlacas = useMemo(() => {
     if (!inventario || faixas.length === 0) return [] as FaixaInfo[]
+    if (modoVisao === 'inspecao') {
+      return janelas.filter((janela) =>
+        inventario.placas.some((placa) => sobrepoeFaixa(placa, janela)),
+      )
+    }
     if (modoVisao === 'bloco') {
       return blocos.filter((bloco) =>
         inventario.placas.some((placa) => sobrepoeFaixa(placa, bloco)),
       )
     }
     return faixas.filter((faixa) => inventario.placas.some((placa) => sobrepoeFaixa(placa, faixa)))
-  }, [inventario, faixas, blocos, modoVisao])
+  }, [inventario, faixas, blocos, janelas, modoVisao])
 
   const faixaAtual = useMemo(
     () => faixasComPlacas.find((f) => f.arquivo === faixaSelecionada) ?? null,
@@ -386,6 +437,13 @@ export function IcpView() {
       }))
   }, [juntasGeometria, faixaAtual])
 
+  const retangulosPlacas = useMemo(() => {
+    if (!faixaAtual) return [] as Retangulo[]
+    return placasDaFaixa
+      .map((placa) => placaNaFaixa(placa, faixaAtual))
+      .filter((retangulo): retangulo is Retangulo => retangulo !== null)
+  }, [faixaAtual, placasDaFaixa])
+
   const resumo = useMemo(() => {
     if (resultados.length === 0) return null
     const icps = resultados.map((r) => r.icp ?? r.valor ?? 0)
@@ -426,7 +484,12 @@ export function IcpView() {
 
   useEffect(() => {
     if (!faixaAtual || !viagemNome.trim()) return
-    const url = getConcatenadaUrl(viagemNome.trim(), faixaAtual.arquivo)
+    const url =
+      faixaAtual.arquivo.startsWith('intervalo_') &&
+      faixaAtual.km_inicio !== null &&
+      faixaAtual.km_fim !== null
+        ? getIntervaloUrl(viagemNome.trim(), faixaAtual.km_inicio, faixaAtual.km_fim)
+        : getConcatenadaUrl(viagemNome.trim(), faixaAtual.arquivo)
     const cacheada = imgCacheRef.current.get(url)
     const img = cacheada ?? new Image()
     if (!cacheada) {
@@ -1220,12 +1283,41 @@ export function IcpView() {
               <label>Visão:</label>
               <select
                 value={modoVisao}
-                onChange={(e) => setModoVisao(e.target.value as 'bloco' | 'faixa')}
-                title="Bloco de 20 m (4 faixas) ou faixa de 5 m"
+                onChange={(e) =>
+                  setModoVisao(e.target.value as 'bloco' | 'faixa' | 'inspecao')
+                }
+                title="Bloco de 20 m, faixa de 5 m ou inspeção de N placas"
               >
                 <option value="bloco">Bloco 20 m</option>
                 <option value="faixa">Faixa 5 m</option>
+                <option value="inspecao">Inspeção (N placas)</option>
               </select>
+              {modoVisao === 'inspecao' && (
+                <>
+                  <label>Placas:</label>
+                  <select
+                    value={placasPorVez}
+                    onChange={(e) => {
+                      setPlacasPorVez(Number(e.target.value) || 4)
+                      setFaixaSelecionada('')
+                    }}
+                    title="Quantidade de placas por vez"
+                  >
+                    {[1, 2, 3, 4, 5, 6, 8, 10].map((n) => (
+                      <option key={n} value={n}>{n}</option>
+                    ))}
+                  </select>
+                  <label>Foco:</label>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    value={opacidadeMascara}
+                    onChange={(e) => setOpacidadeMascara(Number(e.target.value))}
+                    title="Opacidade da máscara que escurece fora das placas"
+                  />
+                </>
+              )}
               <label>Trecho:</label>
               <select
                 value={faixaSelecionada}
@@ -1271,6 +1363,41 @@ export function IcpView() {
                   className="annotation-svg-layer"
                   viewBox={`0 0 ${faixaAtual?.altura_px ?? 5120} 4096`}
                 >
+                  {modoVisao === 'inspecao' && (
+                    <>
+                      <defs>
+                        <mask id="icp-foco-placas">
+                          <rect
+                            x={0}
+                            y={0}
+                            width={faixaAtual?.altura_px ?? 5120}
+                            height={4096}
+                            fill="white"
+                          />
+                          {retangulosPlacas.map((retangulo, index) => (
+                            <rect
+                              key={`foco-${index}`}
+                              x={retangulo.x}
+                              y={retangulo.y}
+                              width={retangulo.width}
+                              height={retangulo.height}
+                              fill="black"
+                            />
+                          ))}
+                        </mask>
+                      </defs>
+                      <rect
+                        x={0}
+                        y={0}
+                        width={faixaAtual?.altura_px ?? 5120}
+                        height={4096}
+                        fill="#000000"
+                        opacity={opacidadeMascara / 100}
+                        mask="url(#icp-foco-placas)"
+                        pointerEvents="none"
+                      />
+                    </>
+                  )}
                   {deteccoesDaFaixa.map((det, index) => {
                     if (!det.global_box || det.global_box.length < 4) return null
                     const [x1, y1, x2, y2] = det.global_box

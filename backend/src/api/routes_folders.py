@@ -364,27 +364,25 @@ async def deletar_job(job_id: str, settings: Settings = Depends(get_settings_dep
     }
 
 
-@router.get("/faixas/{viagem_nome}")
-async def listar_faixas(viagem_nome: str, settings: Settings = Depends(get_settings_dep)):
-    """Lista todas as faixas de 5m de uma viagem com seus metadados.
+def _faixas_da_viagem(
+    settings: Settings, viagem_nome: str
+) -> tuple[Path, list[dict]] | None:
+    """Metadados das faixas da viagem (banco preferencial, JSON como fallback).
 
-    O banco é a fonte preferencial (RDT1-11); se a viagem ainda não estiver no
-    banco, cai nos ``lote_*_meta.json`` legados.
+    Devolve ``(base, faixas)`` ou ``None`` se a viagem não existir.
     """
-    do_banco = viagem_store.listar_faixas_viagem(viagem_nome)
-    if do_banco is not None:
-        return do_banco
-
     base = _resolver_viagem(settings, viagem_nome)
     if base is None:
-        raise HTTPException(404, f"Viagem não encontrada: {viagem_nome}")
+        return None
+
+    do_banco = viagem_store.listar_faixas_viagem(viagem_nome)
+    if do_banco is not None:
+        return base, list(do_banco.get("faixas", []))
 
     import json as _json
 
-    meta_files = sorted(base.glob("lote_*_meta.json"))
     faixas: list[dict] = []
-
-    for meta_path in meta_files:
+    for meta_path in sorted(base.glob("lote_*_meta.json")):
         try:
             meta = _json.loads(meta_path.read_text(encoding="utf-8"))
             bloco = meta.get("bloco", {})
@@ -393,12 +391,97 @@ async def listar_faixas(viagem_nome: str, settings: Settings = Depends(get_setti
                 faixas.append(faixa)
         except Exception:
             continue
+    return base, faixas
 
+
+@router.get("/faixas/{viagem_nome}")
+async def listar_faixas(viagem_nome: str, settings: Settings = Depends(get_settings_dep)):
+    """Lista todas as faixas de 5m de uma viagem com seus metadados.
+
+    O banco é a fonte preferencial (RDT1-11); se a viagem ainda não estiver no
+    banco, cai nos ``lote_*_meta.json`` legados.
+    """
+    dados = _faixas_da_viagem(settings, viagem_nome)
+    if dados is None:
+        raise HTTPException(404, f"Viagem não encontrada: {viagem_nome}")
+    base, faixas = dados
     return {
         "viagem": base.name,
         "total_faixas": len(faixas),
         "faixas": faixas,
     }
+
+
+def _recortar_intervalo(
+    base: Path, faixas: list[dict], km_inicio: float, km_fim: float
+) -> bytes | None:
+    """Recorta e empilha as faixas cobrindo ``[km_inicio, km_fim]`` (1 imagem).
+
+    Serve à visualização de N placas contíguas. A escala é a de display
+    (1024 px/m, a mesma das faixas ``lote_XXXX_faixa_N.png``), então o recorte
+    de cada faixa é proporcional ao trecho de KM dentro dela.
+    """
+    import cv2
+    import numpy as np
+
+    trechos = []
+    for faixa in sorted(faixas, key=lambda f: float(f["km_inicio"])):
+        f_ini = float(faixa["km_inicio"])
+        f_fim = float(faixa["km_fim"])
+        ini = max(km_inicio, f_ini)
+        fim = min(km_fim, f_fim)
+        if fim <= ini:
+            continue
+        caminho = base / str(faixa["arquivo"])
+        if not caminho.is_file():
+            continue
+        imagem = cv2.imread(str(caminho))
+        if imagem is None:
+            continue
+        altura = imagem.shape[0]
+        span = f_fim - f_ini
+        if span <= 0 or altura <= 0:
+            continue
+        y0 = int(round((ini - f_ini) / span * altura))
+        y1 = int(round((fim - f_ini) / span * altura))
+        y0 = max(0, min(altura, y0))
+        y1 = max(0, min(altura, y1))
+        if y1 <= y0:
+            continue
+        trechos.append(imagem[y0:y1])
+
+    if not trechos:
+        return None
+    bloco = np.vstack(trechos)
+    ok, buffer = cv2.imencode(".png", bloco)
+    return buffer.tobytes() if ok else None
+
+
+@router.get("/intervalo/{viagem_nome}")
+async def servir_intervalo(
+    viagem_nome: str,
+    km_inicio: float = Query(..., description="KM inicial do recorte"),
+    km_fim: float = Query(..., description="KM final do recorte"),
+    settings: Settings = Depends(get_settings_dep),
+):
+    """Serve uma imagem única recortada de ``km_inicio`` a ``km_fim`` (ICP).
+
+    Usada pelo modo de inspeção para mostrar N placas contíguas como uma imagem
+    só. Só visualização: não altera detecção/cálculo."""
+    if km_fim <= km_inicio:
+        raise HTTPException(400, "'km_fim' deve ser maior que 'km_inicio'")
+    dados = _faixas_da_viagem(settings, viagem_nome)
+    if dados is None:
+        raise HTTPException(404, f"Viagem não encontrada: {viagem_nome}")
+    base, faixas = dados
+    png = _recortar_intervalo(base, faixas, km_inicio, km_fim)
+    if png is None:
+        raise HTTPException(404, "Sem faixas para o intervalo solicitado")
+    return Response(
+        content=png,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
 
 
 _BLOCO_20M_RE = re.compile(r"^lote_(\d+)_20m\.png$")
