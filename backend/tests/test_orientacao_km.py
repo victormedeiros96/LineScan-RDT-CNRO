@@ -85,6 +85,65 @@ def test_crescente_nao_inverte_e_amostra_topo(tmp_path, monkeypatch) -> None:
     assert faixa.imagens_raw == ["frame_0000.png", "frame_0001.png", "frame_0002.png"]
 
 
+def test_crescente_inverte_verticalmente_cada_frame(tmp_path, monkeypatch) -> None:
+    """Regressão RDT1-40: o sensor grava a última linha no topo do frame.
+
+    Com frames que codificam uma rampa contínua (mas armazenados invertidos, como
+    o linescan faz), a concatenação crescente só fica contínua se cada frame for
+    invertido verticalmente antes de empilhar. Sem isso a emenda a cada 2 m vira
+    uma serra (textura espelhada).
+    """
+    pasta = tmp_path / "frames"
+    pasta.mkdir()
+    n = 10
+    altura, largura = ip.ALTURA_PX, ip.LARGURA_PX
+    total = n * altura
+    rampa = np.round(np.arange(total) * 255.0 / (total - 1)).astype(np.uint8)
+
+    caminhos = []
+    for k in range(n):
+        segmento = rampa[k * altura : (k + 1) * altura]
+        # Sensor armazena a ÚLTIMA linha adquirida no topo: frame é o segmento
+        # invertido. A concatenação correta tem de desfazer isso.
+        frame = segmento[::-1]
+        img = np.repeat(frame[:, None], largura, axis=1)
+        bgr = np.repeat(img[:, :, None], 3, axis=2)
+        caminho = pasta / f"frame_{k:04d}.png"
+        assert cv2.imwrite(str(caminho), bgr)
+        caminhos.append(caminho)
+
+    monkeypatch.setattr(ip, "apply_clahe", lambda img, **_kw: img)
+    destino = tmp_path / "dest"
+    resultado = ip._processar_lote(
+        (
+            0,
+            [str(p) for p in caminhos],
+            str(destino),
+            "left",
+            1.0,
+            "crescente",
+            2.0,
+            8,
+            (0,),
+            False,
+        )
+    )
+    assert resultado is not None
+    salva = cv2.imread(str(resultado.faixas[0].caminho), cv2.IMREAD_GRAYSCALE)
+    assert salva is not None
+
+    medias = salva.mean(axis=1)
+    # A faixa 0 é o primeiro 5 m (2560 linhas cruas) redimensionado para o display
+    # (5120 linhas). Depois do flip por frame, a rampa tem de ser a contínua; sem o
+    # flip ela sai em serra (cada frame invertido) e fica longe do esperado.
+    esperado = np.interp(
+        np.linspace(0, 2559, salva.shape[0]),
+        np.arange(2560),
+        rampa[:2560].astype(np.float64),
+    )
+    assert float(np.abs(medias - esperado).max()) < 3.0
+
+
 def test_decrescente_inverte_e_amostra_base(tmp_path, monkeypatch) -> None:
     resultado = _rodar_lote(tmp_path, monkeypatch, sentido="decrescente", faixa_alvo=3)
     faixa = resultado.faixas[0]

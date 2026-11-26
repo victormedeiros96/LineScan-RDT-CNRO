@@ -193,10 +193,17 @@ def _processar_lote(
     total_height = sum(img.shape[0] for _, img in resized)
     concat_bgr = np.zeros((total_height, LARGURA_PX, 3), dtype=np.uint8)
 
-    # A visualização é sempre crescente em KM. No sentido crescente os primeiros
-    # frames já são os de menor KM (topo), então mantém a ordem. No decrescente os
-    # primeiros frames são os de maior KM, então inverte-se para pôr o menor KM no topo.
-    frames = list(reversed(resized)) if sentido == "decrescente" else resized
+    # A visualização é sempre crescente em KM (topo = menor KM). O sensor linescan
+    # grava a ÚLTIMA linha adquirida no topo de cada frame (linha 0) e a primeira
+    # na base, então no sentido crescente cada frame precisa ser invertido
+    # verticalmente antes de empilhar — sem isso a emenda a cada 2 m sai espelhada
+    # (descontínua). No decrescente o KM cai com o tempo de gravação: inverter a
+    # ordem dos frames já põe o menor KM no topo e o flip por frame não é
+    # necessário. Regressão: RDT1-40.
+    if sentido == "decrescente":
+        frames = list(reversed(resized))
+    else:
+        frames = [(nome, cv2.flip(img, 0)) for nome, img in resized]
 
     y = 0
     for nome, img in frames:
