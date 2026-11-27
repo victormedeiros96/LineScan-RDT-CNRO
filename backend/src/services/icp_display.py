@@ -137,7 +137,7 @@ def thumbnail_intervalo_jpeg(
     MB para intervalos com N placas). A escala vem de 1024 px/m (display), então
     a proporção em relação ao KM é preservada.
     """
-    recortes: list[tuple[np.ndarray, float]] = []
+    trechos_meta: list[tuple[Path, float, float, float, float]] = []
     for faixa in sorted(faixas, key=lambda f: float(f.get("km_inicio") or 0.0)):
         try:
             f_ini = float(faixa["km_inicio"])
@@ -148,10 +148,25 @@ def thumbnail_intervalo_jpeg(
         fim = min(km_fim, f_fim)
         if fim <= ini:
             continue
-        imagem = _ler(base / str(faixa["arquivo"]))
+        trechos_meta.append((base / str(faixa["arquivo"]), f_ini, f_fim, ini, fim))
+    if not trechos_meta:
+        return None
+
+    # Fator único para todos os trechos, calculado só do KM (sem decodificar as
+    # faixas): altura de display do intervalo a 1024 px/m.
+    total_km = sum(fim - ini for _, _, _, ini, fim in trechos_meta)
+    if total_km <= 0:
+        return None
+    total_h = max(1, int(round(total_km * 1024 * 1000)))
+
+    trechos: list[np.ndarray] = []
+    alvo_w = 0
+    escala = 1.0
+    for caminho, f_ini, f_fim, ini, fim in trechos_meta:
+        imagem = _ler(caminho)
         if imagem is None:
             continue
-        altura = imagem.shape[0]
+        altura, largura = imagem.shape[:2]
         span = f_fim - f_ini
         if span <= 0 or altura <= 0:
             continue
@@ -159,25 +174,20 @@ def thumbnail_intervalo_jpeg(
         y1 = max(0, min(altura, int(round((fim - f_ini) / span * altura))))
         if y1 <= y0:
             continue
-        recortes.append((imagem[y0:y1, :], fim - ini))
-    if not recortes:
-        return None
-
-    # Altura de display do intervalo (1024 px/m) → fator único para todos os trechos.
-    total_km = sum(span for _, span in recortes)
-    total_h = max(1, int(round(total_km * 1024 * 1000)))
-    largura_real = recortes[0][0].shape[1]
-    escala = _escala_thumbnail(total_h, largura_real, largura_max)
-    alvo_w = max(1, int(round(largura_real * escala)))
-
-    trechos = [
-        cv2.resize(
-            recorte,
-            (alvo_w, max(1, int(round(span * 1024 * 1000 * escala)))),
-            interpolation=cv2.INTER_AREA,
+        if alvo_w == 0:
+            escala = _escala_thumbnail(total_h, largura, largura_max)
+            alvo_w = max(1, int(round(largura * escala)))
+        # Reduz já o recorte: o array em resolução integral é descartado logo
+        # abaixo, então o pico fica em ~uma faixa + os trechos já reduzidos.
+        trechos.append(
+            cv2.resize(
+                imagem[y0:y1, :],
+                (alvo_w, max(1, int(round((fim - ini) * 1024 * 1000 * escala)))),
+                interpolation=cv2.INTER_AREA,
+            )
         )
-        for recorte, span in recortes
-    ]
+    if not trechos:
+        return None
     return _codificar_jpeg(np.vstack(trechos), qualidade)
 
 
