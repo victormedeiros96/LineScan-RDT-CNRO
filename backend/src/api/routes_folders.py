@@ -509,8 +509,8 @@ async def servir_imagem(
     arquivo: str | None = Query(None, description="Faixa/bloco (ex.: lote_0001_20m.png)"),
     km_inicio: float | None = Query(None, description="KM inicial (modo inspeção)"),
     km_fim: float | None = Query(None, description="KM final (modo inspeção)"),
-    largura_max: int = Query(2048, ge=256, le=8192),
-    qualidade: int = Query(70, ge=1, le=100),
+    largura_max: int = Query(1024, ge=256, le=8192),
+    qualidade: int = Query(60, ge=1, le=100),
     settings: Settings = Depends(get_settings_dep),
 ):
     """Serve um thumbnail JPEG comprimido de uma faixa/bloco/intervalo do ICP.
@@ -546,7 +546,7 @@ async def servir_tile(
     request: Request,
     x: int = Query(..., ge=0, description="Coordenada X no display (KM)"),
     y: int = Query(..., ge=0, description="Coordenada Y no display (lateral)"),
-    tamanho: int = Query(512, ge=64, le=2048),
+    tamanho: int = Query(256, ge=64, le=2048),
     arquivo: str | None = Query(None),
     km_inicio: float | None = Query(None),
     km_fim: float | None = Query(None),

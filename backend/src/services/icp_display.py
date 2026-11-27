@@ -90,7 +90,7 @@ def imagem_fonte(
 
 
 def thumbnail_jpeg(
-    imagem: np.ndarray, largura_max: int = 2048, qualidade: int = 70
+    imagem: np.ndarray, largura_max: int = 1024, qualidade: int = 60
 ) -> bytes:
     """JPEG comprimido da imagem inteira (sem rotação), limitado por ``largura_max``.
 
