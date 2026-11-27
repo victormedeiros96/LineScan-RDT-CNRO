@@ -202,6 +202,9 @@ interface JuntaGeometria {
   km: number
   origem?: string
   bloco_indice?: number
+  angulo_graus?: number
+  x0?: number
+  x1?: number
 }
 
 /**
@@ -262,6 +265,10 @@ function agruparJanelas(
 }
 
 const TILE_SIZE = 512
+// Display isotrópico do ICP: 1024 px/m → km por px.
+const KM_POR_PX = 1 / (1024 * 1000)
+const LATERAL_CENTRO_PX = 2048
+const LATERAL_MAX_PX = 4096
 const ZOOM_TILES = 150
 
 /** Item de imagem correspondente a uma faixa/bloco/janela do viewer. */
@@ -440,13 +447,29 @@ export function IcpView() {
     const fim = faixaAtual.km_fim
     const span = fim - inicio
     if (span <= 0) return []
+    const altura = faixaAtual.altura_px
+    const kmParaCanvas = (km: number) => altura - ((km - inicio) / span) * altura
     return juntasGeometria
       .filter((junta) => junta.km >= inicio && junta.km <= fim)
-      .map((junta) => ({
-        km: junta.km,
-        origem: junta.origem,
-        x: faixaAtual.altura_px - ((junta.km - inicio) / span) * faixaAtual.altura_px,
-      }))
+      .map((junta) => {
+        const angulo = junta.angulo_graus ?? 0
+        const tan = Math.tan((angulo * Math.PI) / 180)
+        const x0 = junta.x0 ?? 0
+        const x1 = junta.x1 ?? LATERAL_MAX_PX
+        // A junta é a reta que passa pelo KM central em x=2048 e inclina com o
+        // ângulo do scan; as pontas (lateral x0/x1) definem a linha desenhada.
+        const kmLateral = (lateral: number) =>
+          junta.km + (lateral - LATERAL_CENTRO_PX) * tan * KM_POR_PX
+        return {
+          km: junta.km,
+          origem: junta.origem,
+          x: kmParaCanvas(junta.km),
+          xInicio: kmParaCanvas(kmLateral(x0)),
+          xFim: kmParaCanvas(kmLateral(x1)),
+          yInicio: x0,
+          yFim: x1,
+        }
+      })
   }, [juntasGeometria, faixaAtual])
 
   const retangulosPlacas = useMemo(() => {
@@ -1460,10 +1483,10 @@ export function IcpView() {
                     return (
                       <g key={`junta-${index}`}>
                         <line
-                          x1={junta.x}
-                          y1={0}
-                          x2={junta.x}
-                          y2={4096}
+                          x1={junta.xInicio}
+                          y1={junta.yInicio}
+                          x2={junta.xFim}
+                          y2={junta.yFim}
                           stroke={cor}
                           strokeWidth={5}
                           strokeDasharray={junta.origem === 'virtual' ? '20 12' : undefined}

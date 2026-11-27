@@ -40,8 +40,6 @@ TOLERANCIA_JUNTA_M = 0.15
 # Junta transversal é perpendicular à via. Trincas diagonais não devem virar
 # transversal: rejeita ajuste com inclinação acima deste limite (graus).
 ANGULO_MAX_TRANSVERSAL = 20.0
-# Confiança da referência inicial do filtro sequencial de ângulo (RDT1-42).
-GANHO_REFERENCIA_ANGULO = 50.0
 
 
 def _selecionar_transversal(
@@ -102,43 +100,50 @@ def _agrupar_juntas(juntas: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return agrupadas
 
 
+def _angulo_para_display(angulo_cru: float, escala: float) -> float:
+    """Converte o ângulo de uma transversal do strip cru para o display.
+
+    No strip cru o eixo do KM usa ``512 px/m`` (frames de 1024 px para 2 m) e a
+    lateral usa ``1024 px/m`` — a imagem é **anisotrópica**. O display é
+    isotrópico (``1024 px/m``), ``escala`` é o fator aplicado ao ``y`` (KM).
+    Como ``tan(ângulo) = Δy/Δx`` e só ``Δy`` é escalado, o ângulo no display é
+    ``atan(tan(ângulo_cru) × escala)``. Antes o fator era dividido, encolhendo a
+    inclinação (RDT1-46).
+    """
+    if escala == 1.0:
+        return float(angulo_cru)
+    return float(
+        math.degrees(math.atan(math.tan(math.radians(angulo_cru)) * escala))
+    )
+
+
 def _corrigir_angulos(juntas: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Suaviza a inclinação das transversais herdando o ângulo da anterior.
+    """Uniformiza a inclinação das transversais pela mediana robusta do trecho.
 
     A inclinação é propriedade do scan (barra de referência), não de cada placa:
-    o detector às vezes devolve saltos espúrios (trincas diagonais, ruído) de
-    ±5–11° entre juntas consecutivas. Usa o filtro sequencial do
-    ``juntas-detector`` — ``reta_gpu.suavizar_angulos`` (README: "Filtro
-    sequencial do ângulo"): medição fraca (pouca cobertura lateral, ``_ganho``)
-    ou salto acima de ``salto_max`` herda o ângulo da junta anterior.
+    o detector devolve saltos espúrios de ±5–11° em juntas isoladas (trinca
+    diagonal, ruído) e a inclinação real é praticamente constante. O
+    ``reta_gpu.suavizar_angulos`` do pacote espera o **ganho de intensidade**
+    (p90) de cada junta; ``geometria.agrupar`` só devolve a cobertura lateral,
+    que não tem a mesma escala. Usar a cobertura como ganho deixava o filtro
+    sempre com peso máximo (nenhuma correção), e semear o filtro com a mediana
+    ainda trocava o ângulo da primeira junta de cada bloco (RDT1-46).
 
-    Corrige **só** ``angulo_graus``; ``km``/``y``/cobertura ficam intactos. As
-    juntas devem vir ordenadas ao longo da via. RDT1-42.
+    Aqui aplicamos a política "normal" documentada pelo pacote
+    (``inclinacao.decide``): **ângulo = mediana da janela**. A mediana é imune
+    a poucos outliers e preserva a inclinação real do scan.
+
+    Corrige **só** ``angulo_graus``; ``km``/``y``/``x0``/``x1`` ficam intactos,
+    então o centro da junta não se desloca. RDT1-42 / RDT1-46.
     """
-    if len(juntas) < 2:
-        for junta in juntas:
-            junta.pop("_ganho", None)
-        return juntas
-    try:
-        from juntas_detector.reta_gpu import suavizar_angulos
-    except Exception:  # pacote antigo/sem o módulo: mantém o ângulo bruto
-        for junta in juntas:
-            junta.pop("_ganho", None)
-        return juntas
-
     angulos = [float(junta.get("angulo_graus") or 0.0) for junta in juntas]
-    ganhos = [float(junta.pop("_ganho", 0.0) or 0.0) for junta in juntas]
-    # Semeia o filtro com a mediana: se a primeira medição for um pico isolado
-    # (o filtro do pacote começa em ``angulos[0]``), ela seria herdada por toda
-    # a sequência. A mediana só é usada como referência inicial.
+    if not angulos:
+        return juntas
     referencia = float(statistics.median(angulos))
-    suaves, _ = suavizar_angulos(
-        [referencia, *angulos], [GANHO_REFERENCIA_ANGULO, *ganhos]
-    )
-    suaves = suaves[1:]
-    for junta, angulo in zip(juntas, suaves):
-        junta["angulo_graus"] = round(float(angulo), 6)
+    for junta in juntas:
+        junta["angulo_graus"] = round(referencia, 6)
     return juntas
+
 
 
 @dataclass(frozen=True)
@@ -330,17 +335,12 @@ def detectar_juntas_geometria(
                 "angulo_graus": float(junta.get("angulo_graus") or 0.0),
                 "x0": float(junta["t0"]),
                 "x1": float(junta["t1"]),
-                # Cobertura lateral = confiança para o filtro de ângulo.
-                "_ganho": float(junta.get("comprimento") or 0.0),
             }
         )
 
     juntas = _agrupar_juntas(juntas)
     if config.corrigir_angulo:
-        juntas = _corrigir_angulos(juntas)
-    else:
-        for junta in juntas:
-            junta.pop("_ganho", None)
+        _corrigir_angulos(juntas)
     return juntas
 
 
@@ -519,11 +519,9 @@ def detectar_estrutura(
             for grupo in grupos_geo:
                 if grupo.get("orientacao") != "h":
                     continue
-                # Ângulo no strip cru; converte para o display (y × escala).
+                # Ângulo no strip cru (anisotrópico); converte para o display.
                 angulo_cru = float(grupo.get("angulo_graus") or 0.0)
-                angulo = float(
-                    math.degrees(math.atan(math.tan(math.radians(angulo_cru)) / escala))
-                )
+                angulo = _angulo_para_display(angulo_cru, escala)
                 if abs(angulo) > ANGULO_MAX_TRANSVERSAL:
                     # Trinca diagonal não é junta transversal (DNIT 062/2004-PRO).
                     continue
@@ -539,20 +537,15 @@ def detectar_estrutura(
                         "x1": float(grupo["t1"]),
                         "origem": "detectada",
                         "bloco_indice": bloco_indice,
-                        # Cobertura lateral = confiança para o filtro de ângulo.
-                        "_ganho": float(grupo.get("comprimento") or 0.0),
                     }
                 )
 
-        # A inclinação é propriedade do scan: suaviza o ângulo dentro do bloco
-        # (herda o anterior em saltos espúrios), antes de fechar as placas.
+        # A inclinação é propriedade do scan: uniformiza o ângulo dentro do
+        # bloco pela mediana robusta, antes de fechar as placas.
         juntas_bloco = transversais[inicio_transversais:]
         juntas_bloco.sort(key=lambda t: float(t["y"]))
         if config.corrigir_angulo:
             _corrigir_angulos(juntas_bloco)
-        else:
-            for junta in juntas_bloco:
-                junta.pop("_ganho", None)
 
         provedor = _ProvedorFormas(formas)
         fragmentos = longitudinais.fragmentos_verticais(provedor, strip)
