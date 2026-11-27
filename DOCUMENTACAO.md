@@ -810,6 +810,12 @@ O caminho preferido do job do rígido (quando não há calibração manual) roda
    (`x = a·y + b`, convertido para o `y` global pela origem do bloco). O
    offset do bloco converte `km` em px com `×1.000×PX_POR_METRO` (RDT1-36);
    sem o fator 1.000 as juntas de todos os blocos caem no início da viagem.
+   A **inclinação** da transversal (`angulo_graus`) passa pelo filtro sequencial
+   de ângulo do `juntas-detector` (`reta_gpu.suavizar_angulos`, RDT1-42): como a
+   inclinação é propriedade do scan e não de cada placa, medições fracas ou
+   saltos acima de 3° herdam o ângulo da junta anterior (referência inicial pela
+   mediana). Isso evita que ruído/trincas diagonais deem ±5–11° e torçam a borda
+   do bloco; ligado por `corrigir_angulo` em `modelos/icp/config.json`.
 3. **Cruzamento** — `placas.poligonos` fecha cada bloco entre duas transversais
    consecutivas e as duas longitudinais. Cada bloco tem id (`P0001`…),
    contorno/máscara, `origem_juntas` e `origem_largura`

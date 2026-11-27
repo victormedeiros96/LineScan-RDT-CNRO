@@ -339,3 +339,41 @@ def test_strip_do_bloco_prefere_arquivo_cru(tmp_path: Path) -> None:
     assert altura == 10240
     assert km_inicio == pytest.approx(0.0)
     assert escala == pytest.approx(2.0)
+
+
+def test_corrigir_angulos_descarta_saltos_espurios() -> None:
+    """RDT1-42: ângulo é do scan; saltos >3° herdam o ângulo da junta anterior."""
+    # Primeiro valor é um pico isolado (43,9°): o seed pela mediana evita
+    # que ele seja herdado por toda a sequência.
+    angles = [43.9, 0.9, 1.0, 10.3, 1.3, 0.9, 5.9, -5.6, 1.8, 1.4, 11.5]
+    juntas = [
+        {"y": float(i), "angulo_graus": a, "_ganho": 4000.0}
+        for i, a in enumerate(angles)
+    ]
+
+    icp_juntas._corrigir_angulos(juntas)
+
+    corrigidos = [j["angulo_graus"] for j in juntas]
+    # O valor físico (~1°) é preservado; os picos de ±5–11° somem.
+    assert max(corrigidos) < 2.0
+    assert min(corrigidos) > 0.5
+    assert all("_ganho" not in j for j in juntas)
+
+
+def test_corrigir_angulos_ignora_lista_curta() -> None:
+    juntas = [{"y": 0.0, "angulo_graus": 7.0, "_ganho": 10.0}]
+
+    assert icp_juntas._corrigir_angulos(juntas) == [{"y": 0.0, "angulo_graus": 7.0}]
+
+
+def test_config_juntas_corrigir_angulo(tmp_path: Path) -> None:
+    """RDT1-42: a correção de ângulo é configurável (default ligado)."""
+    (tmp_path / "icp").mkdir()
+    (tmp_path / "icp" / "config.json").write_text(
+        '{"juntas": {"corrigir_angulo": false}}', encoding="utf-8"
+    )
+
+    cfg = icp_juntas.carregar_config(tmp_path)
+
+    assert cfg.corrigir_angulo is False
+    assert icp_juntas.ConfigJuntas().corrigir_angulo is True
