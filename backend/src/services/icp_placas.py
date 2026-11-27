@@ -337,7 +337,7 @@ def gerar_placas(
             poligono_m.append(
                 {
                     "x_m": round(float(x_px) * mm_por_px_x / 1000.0, 3),
-                    "km": round(float(km), 3),
+                    "km": round(float(km), 6),
                 }
             )
 
@@ -470,7 +470,7 @@ def gerar_placas_por_juntas(
             poligono_m.append(
                 {
                     "x_m": round(float(x_px) * mm_por_px_x / 1000.0, 3),
-                    "km": round(float(km), 3),
+                    "km": round(float(km), 6),
                 }
             )
 
@@ -561,7 +561,7 @@ def _placa_de_bloco(
         poligono_m.append(
             {
                 "x_m": round(float(x_px) * mm_por_px_x / 1000.0, 3),
-                "km": round(float(km), 3),
+                "km": round(float(km), 6),
             }
         )
 

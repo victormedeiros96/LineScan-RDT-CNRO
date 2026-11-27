@@ -6,6 +6,8 @@ inventário de placas — DNIT 062/2004-PRO.
 """
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from src.services import icp_blocos
@@ -177,6 +179,35 @@ def test_montar_inventario_com_estrutura_fecha_blocos_e_marca_origem() -> None:
     assert len(inventario["placas"][0]["poligono"]) == 4
     assert inventario["placas"][0]["pontos_faixa"]
     assert inventario["blocos_sem_mascara"] == []
+
+
+def test_montar_inventario_com_estrutura_preserva_inclinacao_no_poligono() -> None:
+    """RDT1-47: ``poligono_m`` mantém a inclinação da transversal (6 casas de km).
+
+    O ``km`` do polígono era arredondado a 3 casas (=1 m), o que apagava a
+    defasagem de poucos milímetros por metro entre as laterais e deixava a área
+    do bloco reta/deslocada no viewer.
+    """
+    angulo = 8.0
+    transversais = [
+        {"y": 0.0, "angulo_graus": angulo, "x0": 0.0, "x1": 4095.0, "origem": "detectada"},
+        {"y": _px(4.5), "angulo_graus": angulo, "x0": 0.0, "x1": 4095.0, "origem": "detectada"},
+    ]
+    estrutura = {
+        "transversais": transversais,
+        "retas_por_bloco": {0: _retas()},
+        "blocos_ranges": [(0, 0.0, _px(20.0))],
+        "km0": 0.0,
+    }
+
+    inventario = montar_inventario(
+        _faixas(n_blocos=1), estrutura=estrutura, mm_por_px_y=MM, mm_por_px_x=MM
+    )
+
+    esquerda, direita = inventario["placas"][0]["poligono_m"][:2]
+    defasagem_km = 3.6 * math.tan(math.radians(angulo)) / 1000.0
+    assert direita["km"] - esquerda["km"] == pytest.approx(defasagem_km, abs=1e-4)
+    assert direita["km"] != esquerda["km"]
 
 
 def test_montar_inventario_registra_blocos_sem_mascara() -> None:
