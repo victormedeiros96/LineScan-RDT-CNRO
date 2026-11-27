@@ -1781,6 +1781,21 @@ html.light body {
   pointer-events: none;
 }
 
+.annotation-loading {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3;
+  padding: 0.35rem 0.75rem;
+  border-radius: 999px;
+  background: rgba(5, 6, 11, 0.82);
+  border: 1px solid var(--border-color);
+  color: #e2e8f0;
+  font-size: 0.8rem;
+  pointer-events: none;
+}
+
 .annotation-svg-layer {
   position: absolute;
   inset: 0;

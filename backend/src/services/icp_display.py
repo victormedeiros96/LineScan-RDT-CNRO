@@ -89,6 +89,23 @@ def imagem_fonte(
     return _ler(base / arquivo)
 
 
+def _codificar_jpeg(imagem: np.ndarray, qualidade: int) -> bytes:
+    ok, buffer = cv2.imencode(
+        ".jpg", imagem, [cv2.IMWRITE_JPEG_QUALITY, int(qualidade)]
+    )
+    if not ok:
+        raise ValueError("Falha ao codificar o thumbnail JPEG")
+    return buffer.tobytes()
+
+
+def _escala_thumbnail(altura_total: int, largura: int, largura_max: int) -> float:
+    """Fator de redução para caber o maior lado em ``largura_max`` (nunca amplia)."""
+    maior = max(int(altura_total), int(largura))
+    if maior <= 0 or largura_max <= 0 or maior <= largura_max:
+        return 1.0
+    return largura_max / maior
+
+
 def thumbnail_jpeg(
     imagem: np.ndarray, largura_max: int = 1024, qualidade: int = 60
 ) -> bytes:
@@ -97,17 +114,101 @@ def thumbnail_jpeg(
     O limite vale para o maior lado, então tanto a lateral quanto o KM cabem.
     """
     altura, largura = imagem.shape[:2]
-    maior = max(altura, largura)
-    if maior > largura_max > 0:
-        escala = largura_max / maior
+    escala = _escala_thumbnail(altura, largura, largura_max)
+    if escala < 1.0:
         novo = (max(1, int(round(largura * escala))), max(1, int(round(altura * escala))))
         imagem = cv2.resize(imagem, novo, interpolation=cv2.INTER_AREA)
-    ok, buffer = cv2.imencode(
-        ".jpg", imagem, [cv2.IMWRITE_JPEG_QUALITY, int(qualidade)]
-    )
-    if not ok:
-        raise ValueError("Falha ao codificar o thumbnail JPEG")
-    return buffer.tobytes()
+    return _codificar_jpeg(imagem, qualidade)
+
+
+def thumbnail_intervalo_jpeg(
+    base: Path,
+    faixas: list[dict],
+    km_inicio: float,
+    km_fim: float,
+    largura_max: int = 1024,
+    qualidade: int = 60,
+) -> bytes | None:
+    """Thumbnail de ``[km_inicio, km_fim]`` reduzindo cada trecho ao ler.
+
+    Diferente de :func:`imagem_fonte`, não empilha as faixas em resolução
+    integral: cada recorte é reduzido imediatamente ao fator final e só então
+    empilhado, mantendo o pico de memória em ~uma faixa (em vez de centenas de
+    MB para intervalos com N placas). A escala vem de 1024 px/m (display), então
+    a proporção em relação ao KM é preservada.
+    """
+    trechos_meta: list[tuple[Path, float, float, float, float]] = []
+    for faixa in sorted(faixas, key=lambda f: float(f.get("km_inicio") or 0.0)):
+        try:
+            f_ini = float(faixa["km_inicio"])
+            f_fim = float(faixa["km_fim"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        ini = max(km_inicio, f_ini)
+        fim = min(km_fim, f_fim)
+        if fim <= ini:
+            continue
+        trechos_meta.append((base / str(faixa["arquivo"]), f_ini, f_fim, ini, fim))
+    if not trechos_meta:
+        return None
+
+    # Fator único para todos os trechos, calculado só do KM (sem decodificar as
+    # faixas): altura de display do intervalo a 1024 px/m.
+    total_km = sum(fim - ini for _, _, _, ini, fim in trechos_meta)
+    if total_km <= 0:
+        return None
+    total_h = max(1, int(round(total_km * 1024 * 1000)))
+
+    trechos: list[np.ndarray] = []
+    alvo_w = 0
+    escala = 1.0
+    for caminho, f_ini, f_fim, ini, fim in trechos_meta:
+        imagem = _ler(caminho)
+        if imagem is None:
+            continue
+        altura, largura = imagem.shape[:2]
+        span = f_fim - f_ini
+        if span <= 0 or altura <= 0:
+            continue
+        y0 = max(0, min(altura, int(round((ini - f_ini) / span * altura))))
+        y1 = max(0, min(altura, int(round((fim - f_ini) / span * altura))))
+        if y1 <= y0:
+            continue
+        if alvo_w == 0:
+            escala = _escala_thumbnail(total_h, largura, largura_max)
+            alvo_w = max(1, int(round(largura * escala)))
+        # Reduz já o recorte: o array em resolução integral é descartado logo
+        # abaixo, então o pico fica em ~uma faixa + os trechos já reduzidos.
+        trechos.append(
+            cv2.resize(
+                imagem[y0:y1, :],
+                (alvo_w, max(1, int(round((fim - ini) * 1024 * 1000 * escala)))),
+                interpolation=cv2.INTER_AREA,
+            )
+        )
+    if not trechos:
+        return None
+    return _codificar_jpeg(np.vstack(trechos), qualidade)
+
+
+def thumbnail_item_jpeg(
+    base: Path,
+    faixas: list[dict],
+    arquivo: str | None = None,
+    km_inicio: float | None = None,
+    km_fim: float | None = None,
+    largura_max: int = 1024,
+    qualidade: int = 60,
+) -> bytes | None:
+    """Thumbnail do item do viewer (intervalo, bloco de 20 m ou faixa de 5 m)."""
+    if km_inicio is not None and km_fim is not None:
+        return thumbnail_intervalo_jpeg(
+            base, faixas, km_inicio, km_fim, largura_max, qualidade
+        )
+    imagem = imagem_fonte(base, faixas, arquivo, km_inicio, km_fim)
+    if imagem is None:
+        return None
+    return thumbnail_jpeg(imagem, largura_max, qualidade)
 
 
 def tile_display(
