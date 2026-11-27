@@ -3,11 +3,11 @@ import type { WheelEvent } from 'react'
 import {
   carregarAnalise,
   criarMarcacaoIcp,
-  getConcatenadaUrl,
-  getIntervaloUrl,
+  getImagemUrl,
   getIcpExportUrl,
   getIcpLaudoCsvUrl,
   getIcpRecorteUrl,
+  getTileUrl,
   importarFichaIcp,
   listarFaixas,
   listarIcp,
@@ -17,7 +17,7 @@ import {
   obterPlacasIcp,
   removerMarcacaoIcp,
 } from '../services/api'
-import type { FaixaInfo, IcpPlacaDetalhe } from '../services/api'
+import type { FaixaInfo, IcpPlacaDetalhe, ImagemItem } from '../services/api'
 import type {
   AnaliseResponse,
   Deteccao,
@@ -261,6 +261,21 @@ function agruparJanelas(
   return janelas
 }
 
+const TILE_SIZE = 512
+const ZOOM_TILES = 150
+
+/** Item de imagem correspondente a uma faixa/bloco/janela do viewer. */
+function itemDaFaixa(faixa: FaixaInfo): ImagemItem {
+  if (
+    faixa.arquivo.startsWith('intervalo_') &&
+    faixa.km_inicio !== null &&
+    faixa.km_fim !== null
+  ) {
+    return { kmInicio: faixa.km_inicio, kmFim: faixa.km_fim }
+  }
+  return { arquivo: faixa.arquivo }
+}
+
 function corDeteccao(classe: string): string {
   const c = classe.toLowerCase()
   if (c.includes('panela')) return '#FF0000'
@@ -302,7 +317,7 @@ export function IcpView() {
   const [expandidos, setExpandidos] = useState<Set<string>>(new Set())
   const [faixaSelecionada, setFaixaSelecionada] = useState('')
   const [modoVisao, setModoVisao] = useState<'bloco' | 'faixa' | 'inspecao'>('bloco')
-  const [placasPorVez, setPlacasPorVez] = useState(4)
+  const [placasPorVez, setPlacasPorVez] = useState(2)
   const [opacidadeMascara, setOpacidadeMascara] = useState(60)
   const [placaSelecionada, setPlacaSelecionada] = useState<string | null>(null)
   const [detalhePlaca, setDetalhePlaca] = useState<IcpPlacaDetalhe | null>(null)
@@ -316,10 +331,15 @@ export function IcpView() {
   const [zoom, setZoom] = useState(100)
 
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const tileCanvasRef = useRef<HTMLCanvasElement>(null)
+  const shellRef = useRef<HTMLDivElement>(null)
   const imgRef = useRef<HTMLImageElement | null>(null)
   const imgCacheRef = useRef<Map<string, HTMLImageElement>>(new Map())
+  const tileCacheRef = useRef<Map<string, HTMLImageElement>>(new Map())
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [imgSize, setImgSize] = useState<{ w: number; h: number } | null>(null)
+  const [viewport, setViewport] = useState({ left: 0, top: 0, width: 0, height: 0 })
+  const [tileVersion, setTileVersion] = useState(0)
 
   const blocos = useMemo(() => agruparBlocos(faixas), [faixas])
 
@@ -476,12 +496,7 @@ export function IcpView() {
 
   useEffect(() => {
     if (!faixaAtual || !viagemNome.trim()) return
-    const url =
-      faixaAtual.arquivo.startsWith('intervalo_') &&
-      faixaAtual.km_inicio !== null &&
-      faixaAtual.km_fim !== null
-        ? getIntervaloUrl(viagemNome.trim(), faixaAtual.km_inicio, faixaAtual.km_fim)
-        : getConcatenadaUrl(viagemNome.trim(), faixaAtual.arquivo)
+    const url = getImagemUrl(viagemNome.trim(), itemDaFaixa(faixaAtual), 2048, 70)
     const cacheada = imgCacheRef.current.get(url)
     const img = cacheada ?? new Image()
     if (!cacheada) {
@@ -504,6 +519,102 @@ export function IcpView() {
   useEffect(() => {
     desenharCanvas()
   }, [desenharCanvas, zoom])
+
+  const atualizarViewport = useCallback(() => {
+    const el = shellRef.current
+    if (!el) return
+    setViewport((atual) =>
+      atual.left === el.scrollLeft &&
+      atual.top === el.scrollTop &&
+      atual.width === el.clientWidth &&
+      atual.height === el.clientHeight
+        ? atual
+        : {
+            left: el.scrollLeft,
+            top: el.scrollTop,
+            width: el.clientWidth,
+            height: el.clientHeight,
+          },
+    )
+  }, [])
+
+  useEffect(() => {
+    const el = shellRef.current
+    const agendar = () => window.requestAnimationFrame(atualizarViewport)
+    agendar()
+    window.addEventListener('resize', agendar)
+    const observador =
+      typeof ResizeObserver !== 'undefined' && el ? new ResizeObserver(agendar) : null
+    if (el && observador) observador.observe(el)
+    return () => {
+      window.removeEventListener('resize', agendar)
+      observador?.disconnect()
+    }
+  }, [atualizarViewport, faixaAtual, zoom, modoVisao])
+
+  // Tiles apenas da viewport, pedidos quando há zoom (alta resolução sob demanda).
+  const tilesVisiveis = useMemo(() => {
+    if (zoom < ZOOM_TILES || !faixaAtual || !viewport.width || !viagemNome.trim()) {
+      return [] as { x: number; y: number; tamanho: number; url: string }[]
+    }
+    const altura = faixaAtual.altura_px
+    if (!altura) return []
+    const escala = (viewport.width / altura) * (zoom / 100)
+    if (escala <= 0) return []
+    const margem = TILE_SIZE
+    const x0 = Math.max(0, viewport.left / escala - margem)
+    const x1 = Math.min(altura, (viewport.left + viewport.width) / escala + margem)
+    const y0 = Math.max(0, viewport.top / escala - margem)
+    const y1 = Math.min(4096, (viewport.top + viewport.height) / escala + margem)
+    const item = itemDaFaixa(faixaAtual)
+    const tiles: { x: number; y: number; tamanho: number; url: string }[] = []
+    for (let x = Math.floor(x0 / TILE_SIZE) * TILE_SIZE; x < x1; x += TILE_SIZE) {
+      for (let y = Math.floor(y0 / TILE_SIZE) * TILE_SIZE; y < y1; y += TILE_SIZE) {
+        tiles.push({
+          x,
+          y,
+          tamanho: TILE_SIZE,
+          url: getTileUrl(viagemNome.trim(), item, x, y, TILE_SIZE, 85),
+        })
+      }
+    }
+    return tiles
+  }, [zoom, faixaAtual, viewport, viagemNome])
+
+  useEffect(() => {
+    const canvas = tileCanvasRef.current
+    const altura = faixaAtual?.altura_px ?? 0
+    if (!canvas || !altura) return
+    const larguraBacking = Math.min(altura, 4096)
+    const alturaBacking = Math.max(1, Math.round((larguraBacking * 4096) / altura))
+    if (canvas.width !== larguraBacking) canvas.width = larguraBacking
+    if (canvas.height !== alturaBacking) canvas.height = alturaBacking
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    if (zoom < ZOOM_TILES) return
+    const escalaX = canvas.width / altura
+    const escalaY = canvas.height / 4096
+    tilesVisiveis.forEach((tile) => {
+      let img = tileCacheRef.current.get(tile.url)
+      if (!img) {
+        img = new Image()
+        img.crossOrigin = 'anonymous'
+        img.src = tile.url
+        img.onload = () => setTileVersion((v) => v + 1)
+        tileCacheRef.current.set(tile.url, img)
+      }
+      if (img.complete && img.naturalWidth > 0) {
+        ctx.drawImage(
+          img,
+          tile.x * escalaX,
+          tile.y * escalaY,
+          tile.tamanho * escalaX,
+          tile.tamanho * escalaY,
+        )
+      }
+    })
+  }, [tilesVisiveis, zoom, faixaAtual, tileVersion])
 
   useEffect(() => {
     if (faixasComPlacas.length === 0) {
@@ -1213,7 +1324,7 @@ export function IcpView() {
                   <select
                     value={placasPorVez}
                     onChange={(e) => {
-                      setPlacasPorVez(Number(e.target.value) || 4)
+                      setPlacasPorVez(Number(e.target.value) || 2)
                       setFaixaSelecionada('')
                     }}
                     title="Quantidade de placas por vez"
@@ -1263,7 +1374,12 @@ export function IcpView() {
           </div>
 
           <div className="icp-overlay-body">
-            <div className="annotation-canvas-shell is-moving" onWheel={zoomRoda}>
+            <div
+              ref={shellRef}
+              className="annotation-canvas-shell is-moving"
+              onWheel={zoomRoda}
+              onScroll={atualizarViewport}
+            >
               <div
                 className="annotation-stage"
                 style={{
@@ -1274,6 +1390,7 @@ export function IcpView() {
                 }}
               >
                 <canvas ref={canvasRef} />
+                <canvas ref={tileCanvasRef} className="annotation-tile-layer" />
                 <svg
                   className="annotation-svg-layer"
                   viewBox={`0 0 ${faixaAtual?.altura_px ?? 5120} 4096`}

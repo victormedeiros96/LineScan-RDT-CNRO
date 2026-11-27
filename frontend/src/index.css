@@ -1772,6 +1772,15 @@ html.light body {
   background: #05060b;
 }
 
+.annotation-stage canvas.annotation-tile-layer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  pointer-events: none;
+}
+
 .annotation-svg-layer {
   position: absolute;
   inset: 0;
