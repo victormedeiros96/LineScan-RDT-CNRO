@@ -5,7 +5,6 @@ import type {
   AnaliseResponse,
   Deteccao,
   IcpImportResponse,
-  IcpPlacasResponse,
   IcpResultado,
   IcpInventario,
   IcpPlaca,
@@ -313,27 +312,6 @@ export async function obterPlacasIcp(
 ): Promise<IcpInventario> {
   const { data } = await api.get(
     `/relatorios/icp/${encodeURIComponent(viagemNome)}/placas`,
-  )
-  return data
-}
-
-export interface GerarPlacasIcpPayload {
-  periodo_m?: number
-  fase_m?: number
-  juntas_km?: number[]
-  largura_placa_m?: number
-  comprimento_max_m?: number
-  tamanho_amostra?: number
-  gerar_rois?: boolean
-}
-
-export async function gerarPlacasIcp(
-  viagemNome: string,
-  payload: GerarPlacasIcpPayload,
-): Promise<IcpPlacasResponse> {
-  const { data } = await api.post(
-    `/relatorios/icp/${encodeURIComponent(viagemNome)}/placas`,
-    payload,
   )
   return data
 }

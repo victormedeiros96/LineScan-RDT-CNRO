@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from src.core.config import Settings
 from src.core.dependencies import get_settings_dep
 from src.main import app
+from src.services import icp_placas
 
 
 def _criar_viagem(tmp_path: Path) -> Path:
@@ -49,47 +50,6 @@ def client(tmp_path: Path):
         app.dependency_overrides.clear()
 
 
-def test_gera_e_le_inventario_de_placas(client: TestClient) -> None:
-    resposta = client.post(
-        "/api/relatorios/icp/BR-364/placas",
-        json={"periodo_m": 5.12, "gerar_rois": False},
-    )
-    assert resposta.status_code == 200, resposta.text
-    corpo = resposta.json()
-    assert corpo["status"] == "ok"
-    assert corpo["total_placas"] == 3
-    assert corpo["total_amostras"] == 1
-    assert corpo["inventario"]["placas"][0]["comprimento_m"] == pytest.approx(5.12)
-
-    listagem = client.get("/api/relatorios/icp/BR-364/placas")
-    assert listagem.status_code == 200
-    assert listagem.json()["trecho"]["n_faixas"] == 4
-
-    amostras = client.get("/api/relatorios/icp/BR-364/amostras")
-    assert amostras.status_code == 200
-    assert amostras.json()["amostras"][0]["n_placas"] == 3
-
-
-def test_calibra_pelas_juntas_informadas(client: TestClient) -> None:
-    juntas = [i * 5.12 / 1000 for i in range(4)]
-    resposta = client.post(
-        "/api/relatorios/icp/BR-364/placas",
-        json={"juntas_km": juntas, "gerar_rois": False},
-    )
-    assert resposta.status_code == 200, resposta.text
-    assert resposta.json()["inventario"]["calibracao"]["periodo_m"] == pytest.approx(
-        5.12, abs=0.01
-    )
-
-
-def test_periodo_ausente_e_erro_claro(client: TestClient) -> None:
-    resposta = client.post(
-        "/api/relatorios/icp/BR-364/placas", json={"gerar_rois": False}
-    )
-    assert resposta.status_code == 400
-    assert "periodo_m" in resposta.json()["detail"]
-
-
 @pytest.fixture()
 def client_viagem(tmp_path: Path):
     viagem = _criar_viagem(tmp_path)
@@ -101,17 +61,33 @@ def client_viagem(tmp_path: Path):
         app.dependency_overrides.clear()
 
 
-def _gerar_inventario(client: TestClient) -> None:
-    resposta = client.post(
-        "/api/relatorios/icp/BR-364/placas",
-        json={"periodo_m": 5.12, "gerar_rois": False},
+def _gerar_inventario(viagem: Path) -> None:
+    faixas = icp_placas.listar_faixas(viagem)
+    inventario = icp_placas.montar_inventario(
+        faixas, periodo_m=5.12, fase_m=0.0
     )
-    assert resposta.status_code == 200, resposta.text
+    icp_placas.salvar_inventario(viagem, inventario)
+
+
+def test_le_inventario_de_placas_persistido(client_viagem) -> None:
+    client, viagem = client_viagem
+    _gerar_inventario(viagem)
+
+    listagem = client.get("/api/relatorios/icp/BR-364/placas")
+    assert listagem.status_code == 200, listagem.text
+    corpo = listagem.json()
+    assert corpo["trecho"]["n_faixas"] == 4
+    assert len(corpo["placas"]) == 3
+    assert corpo["placas"][0]["comprimento_m"] == pytest.approx(5.12)
+
+    amostras = client.get("/api/relatorios/icp/BR-364/amostras")
+    assert amostras.status_code == 200
+    assert amostras.json()["amostras"][0]["n_placas"] == 3
 
 
 def test_detalhe_da_placa_traz_amostra_e_vizinhos(client_viagem) -> None:
-    client, _viagem = client_viagem
-    _gerar_inventario(client)
+    client, viagem = client_viagem
+    _gerar_inventario(viagem)
 
     primeira = client.get("/api/relatorios/icp/BR-364/placas/P0001")
     assert primeira.status_code == 200, primeira.text
@@ -140,7 +116,7 @@ def test_detalhe_sem_inventario_e_404(client: TestClient) -> None:
 
 def test_recorte_da_placa_serve_png_e_valida_caminho(client_viagem) -> None:
     client, viagem = client_viagem
-    _gerar_inventario(client)
+    _gerar_inventario(viagem)
     png = b"\x89PNG\r\n\x1a\nconteudo-fake"
     rois = viagem / "icp_rois"
     rois.mkdir()

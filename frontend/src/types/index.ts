@@ -277,13 +277,6 @@ export interface IcpMarcacaoMutacaoResponse extends IcpMarcacoesResponse {
   resultado: IcpResultado
 }
 
-export interface IcpPlacasResponse {
-  status: string
-  viagem: string
-  inventario?: IcpInventario
-  [key: string]: unknown
-}
-
 export interface IcpLaudoItem {
   amostra: string
   rodovia: string | null

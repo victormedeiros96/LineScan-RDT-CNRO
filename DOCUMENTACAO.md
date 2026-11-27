@@ -782,10 +782,9 @@ depende de GPU: a geometria roda em CPU. Há duas origens de geometria:
   O recorte clampa os cantos à faixa e usa folga mínima de 1 px; uma placa
   degenerada (pontos no mesmo KM) é pulada sem interromper as demais (RDT1-35).
 
-API: `POST /api/relatorios/icp/{viagem}/placas` gera/persiste, aceitando
-`detectar: true` (roda o modelo e usa a geometria segmentada), `juntas`
-(geometrias já detectadas) ou, como fallback, `periodo_m`/`fase_m`/`juntas_km`;
-`GET .../icp/{viagem}/placas` e `GET .../icp/{viagem}/amostras` leem.
+O inventário é gerado e persistido pelo job do processamento (detecção de
+juntas → `icp_placas.montar_inventario`); `GET .../icp/{viagem}/placas` e
+`GET .../icp/{viagem}/amostras` apenas leem o `icp_placas.json`.
 
 **Detalhe e recorte da placa (RDT1-24).**
 `GET /api/relatorios/icp/{viagem}/placas/{placa_id}` devolve a placa, a amostra
@@ -845,8 +844,8 @@ virtual aparecem com contorno **tracejado** e sufixo `~`. Os botões
 viagem. Avisos e a contagem de blocos sem máscara aparecem no resumo do
 inventário.
 
-API: `POST .../placas` com `detectar: true` usa esse caminho; a resposta e o
-`GET .../placas` trazem `blocos_sem_mascara` e `avisos`. Regressão em
+O job do processamento usa esse caminho (detecção de estrutura → blocos); o
+`GET .../placas` traz `blocos_sem_mascara` e `avisos`. Regressão em
 `backend/tests/test_icp_blocos.py` (vão múltiplo → virtuais; vão incoerente →
 sem máscara; cruzamento com longitudinais; integração no inventário).
 
@@ -1032,8 +1031,9 @@ O `trinca-detector` é GPL-3.0 e permanece isolado em `/opt/trinca-detector`,
 acessado por adaptador (`ProvedorTrincaDetector`).
 
 O fluxo do processamento segue com o job visível em **Processamentos**. Ao
-concluir, o botão **Abrir ICP** leva à tela de ficha/resultado. A calibração
-manual continua disponível na própria tela do ICP (`POST .../placas`).
+concluir, o botão **Abrir ICP** leva à tela de ficha/resultado. O inventário de
+placas é montado automaticamente pelo próprio job a partir das juntas
+detectadas e a tela apenas lê o resultado (`GET .../placas`).
 
 ### Tela e relatório do ICP na UI (RDT1-19)
 
@@ -1048,10 +1048,9 @@ exportar o laudo.
   (tipo, nome, severidade, densidade, placas afetadas e VD).
 * **Resumo** — total de amostras, ICP médio, melhor/pior e distribuição por
   conceito.
-* **Inventário de placas** — a própria tela gera as placas
-  (`POST /api/relatorios/icp/{viagem}/placas`) a partir de período/fase,
-  largura, comprimento máximo e placas por amostra, e lê o inventário
-  persistido (`GET .../placas`).
+* **Inventário** — o job do processamento monta as placas a partir das juntas
+  detectadas e persiste o inventário (`GET .../placas`); a tela mostra a
+  contagem de placas/amostras e os avisos de blocos sem máscara.
 * **Overlay** — a faixa original é exibida rotacionada 90° com a mesma
   convenção do IGG; as ROIs de placa são desenhadas a partir de
   `km_inicio/km_fim` e das metadados das faixas (`GET /api/pastas/faixas/{viagem}`),
