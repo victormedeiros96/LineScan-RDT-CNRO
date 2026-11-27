@@ -264,12 +264,16 @@ function agruparJanelas(
   return janelas
 }
 
-const TILE_SIZE = 512
+const TILE_SIZE = 256
 // Display isotrópico do ICP: 1024 px/m → km por px.
 const KM_POR_PX = 1 / (1024 * 1000)
 const LATERAL_CENTRO_PX = 2048
 const LATERAL_MAX_PX = 4096
 const ZOOM_TILES = 150
+// Zoom máximo permite chegar perto da resolução nativa da fonte no zoom.
+const ZOOM_MAX = 800
+// Teto de memória do canvas de tiles (evita um backing gigante em blocos longos).
+const MAX_TILE_BACKING = 8192
 
 /** Item de imagem correspondente a uma faixa/bloco/janela do viewer. */
 function itemDaFaixa(faixa: FaixaInfo): ImagemItem {
@@ -519,7 +523,7 @@ export function IcpView() {
 
   useEffect(() => {
     if (!faixaAtual || !viagemNome.trim()) return
-    const url = getImagemUrl(viagemNome.trim(), itemDaFaixa(faixaAtual), 2048, 70)
+    const url = getImagemUrl(viagemNome.trim(), itemDaFaixa(faixaAtual), 1024, 60)
     const cacheada = imgCacheRef.current.get(url)
     const img = cacheada ?? new Image()
     if (!cacheada) {
@@ -608,7 +612,11 @@ export function IcpView() {
     const canvas = tileCanvasRef.current
     const altura = faixaAtual?.altura_px ?? 0
     if (!canvas || !altura) return
-    const larguraBacking = Math.min(altura, 4096)
+    // O backing acompanha o zoom (até a resolução nativa da fonte), então ampliar
+    // revela mais detalhe em vez de esticar um bitmap de resolução fixa.
+    const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1
+    const alvo = viewport.width > 0 ? Math.round(viewport.width * dpr * (zoom / 100)) : altura
+    const larguraBacking = Math.max(1, Math.min(altura, MAX_TILE_BACKING, alvo))
     const alturaBacking = Math.max(1, Math.round((larguraBacking * 4096) / altura))
     if (canvas.width !== larguraBacking) canvas.width = larguraBacking
     if (canvas.height !== alturaBacking) canvas.height = alturaBacking
@@ -637,7 +645,7 @@ export function IcpView() {
         )
       }
     })
-  }, [tilesVisiveis, zoom, faixaAtual, tileVersion])
+  }, [tilesVisiveis, zoom, faixaAtual, tileVersion, viewport])
 
   useEffect(() => {
     if (faixasComPlacas.length === 0) {
@@ -913,7 +921,7 @@ export function IcpView() {
   const zoomRoda = useCallback((event: WheelEvent<HTMLDivElement>) => {
     if (!event.ctrlKey && !event.metaKey) return
     event.preventDefault()
-    setZoom((atual) => Math.max(50, Math.min(400, atual + (event.deltaY < 0 ? 25 : -25))))
+    setZoom((atual) => Math.max(50, Math.min(ZOOM_MAX, atual + (event.deltaY < 0 ? 25 : -25))))
   }, [])
 
   return (

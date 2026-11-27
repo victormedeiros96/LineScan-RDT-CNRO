@@ -202,8 +202,8 @@ function paramsItemImagem(item: ImagemItem): URLSearchParams {
 export function getImagemUrl(
   viagemNome: string,
   item: ImagemItem,
-  larguraMax = 2048,
-  qualidade = 70,
+  larguraMax = 1024,
+  qualidade = 60,
 ): string {
   const params = paramsItemImagem(item)
   params.set('largura_max', String(larguraMax))
@@ -216,7 +216,7 @@ export function getTileUrl(
   item: ImagemItem,
   x: number,
   y: number,
-  tamanho = 512,
+  tamanho = 256,
   qualidade = 85,
 ): string {
   const params = paramsItemImagem(item)

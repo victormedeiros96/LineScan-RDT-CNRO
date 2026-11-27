@@ -1082,11 +1082,15 @@ exportar o laudo.
   densidade, placas afetadas, VD) e as colunas de resumo (VDT, q, VDC, ICP,
   conceito).
 * **Visualização (RDT1-45)** — a visão geral usa um **thumbnail JPEG** comprimido
-  (`GET /api/pastas/imagem/{viagem}`, `largura_max`/`qualidade`), em vez do PNG
-  integral. Ao dar zoom, o viewer carrega **tiles JPEG já rotacionados** somente
-  da viewport (`GET /api/pastas/tile/{viagem}?x=&y=&tamanho=`), com cache em
-  disco. Vale só para o ICP; o IGG segue no seu próprio viewer. O seletor
-  "Inspeção (N placas)" vem com **2** como padrão.
+  (`GET /api/pastas/imagem/{viagem}`, `largura_max`/`qualidade`; padrão 1024 px,
+  qualidade 60 — resolução e qualidade reduzidas para abrir rápido), em vez do
+  PNG integral. Ao dar zoom (a partir de 150%, até 800%), o viewer carrega
+  **tiles JPEG de 256 px já rotacionados** somente da viewport
+  (`GET /api/pastas/tile/{viagem}?x=&y=&tamanho=`), com cache em disco. O canvas
+  de tiles cresce com o zoom até a resolução nativa da fonte, então ampliar
+  revela detalhe nativo em vez de esticar um bitmap de resolução fixa. Vale só
+  para o ICP; o IGG segue no seu próprio viewer. O seletor "Inspeção (N placas)"
+  vem com **2** como padrão.
 * **Erros** — a mensagem do backend é exibida sem alteração (ficha inválida,
   formato não suportado, viagem inexistente, banco indisponível). Sem inventário
   ou com zero placas, a tela avisa para revisar a calibração e sinaliza amostras
