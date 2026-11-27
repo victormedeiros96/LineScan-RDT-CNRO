@@ -9,7 +9,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from src.core.config import Settings
 from src.core.dependencies import get_settings_dep
-from src.services import analise_store, job_store, viagem_store
+from src.services import analise_store, icp_display, job_store, viagem_store
 from src.services.image_processor import calcular_km_faixa
 from src.utils.tipo_pista import normalizar_tipo_pista
 
@@ -482,6 +482,105 @@ async def servir_intervalo(
         media_type="image/png",
         headers={"Cache-Control": "public, max-age=3600"},
     )
+
+
+def _cache_display(base: Path, chave: str, sufixo: str) -> Path:
+    pasta = base / ".cache_display"
+    pasta.mkdir(parents=True, exist_ok=True)
+    return pasta / f"{sufixo}_{chave}.jpg"
+
+
+def _servir_do_cache(caminho: Path, request: Request, media_type: str) -> Response:
+    stat = caminho.stat()
+    etag = f'"{stat.st_mtime_ns:x}-{stat.st_size:x}"'
+    if etag == request.headers.get("if-none-match"):
+        return Response(status_code=304)
+    return Response(
+        content=caminho.read_bytes(),
+        media_type=media_type,
+        headers={"Cache-Control": "public, max-age=86400", "ETag": etag},
+    )
+
+
+@router.get("/imagem/{viagem_nome}")
+async def servir_imagem(
+    viagem_nome: str,
+    request: Request,
+    arquivo: str | None = Query(None, description="Faixa/bloco (ex.: lote_0001_20m.png)"),
+    km_inicio: float | None = Query(None, description="KM inicial (modo inspeção)"),
+    km_fim: float | None = Query(None, description="KM final (modo inspeção)"),
+    largura_max: int = Query(2048, ge=256, le=8192),
+    qualidade: int = Query(70, ge=1, le=100),
+    settings: Settings = Depends(get_settings_dep),
+):
+    """Serve um thumbnail JPEG comprimido de uma faixa/bloco/intervalo do ICP.
+
+    Substitui o PNG integral na visão geral do viewer: o browser recebe bem menos
+    bytes e só pede alta resolução (tiles) ao dar zoom.
+    """
+    dados = _faixas_da_viagem(settings, viagem_nome)
+    if dados is None:
+        raise HTTPException(404, f"Viagem não encontrada: {viagem_nome}")
+    base, faixas = dados
+    if arquivo is None and (km_inicio is None or km_fim is None):
+        raise HTTPException(400, "Informe 'arquivo' ou 'km_inicio'/'km_fim'")
+    if arquivo is not None and ("/" in arquivo or "\\" in arquivo or ".." in arquivo):
+        raise HTTPException(400, "Nome de arquivo inválido")
+    if km_inicio is not None and km_fim is not None and km_fim <= km_inicio:
+        raise HTTPException(400, "'km_fim' deve ser maior que 'km_inicio'")
+
+    params = {"largura_max": largura_max, "qualidade": qualidade}
+    chave = icp_display.chave_cache(base, faixas, params, arquivo, km_inicio, km_fim)
+    caminho = _cache_display(base, chave, "thumb")
+    if not caminho.is_file():
+        imagem = icp_display.imagem_fonte(base, faixas, arquivo, km_inicio, km_fim)
+        if imagem is None:
+            raise HTTPException(404, "Imagem não encontrada para o item solicitado")
+        caminho.write_bytes(icp_display.thumbnail_jpeg(imagem, largura_max, qualidade))
+    return _servir_do_cache(caminho, request, "image/jpeg")
+
+
+@router.get("/tile/{viagem_nome}")
+async def servir_tile(
+    viagem_nome: str,
+    request: Request,
+    x: int = Query(..., ge=0, description="Coordenada X no display (KM)"),
+    y: int = Query(..., ge=0, description="Coordenada Y no display (lateral)"),
+    tamanho: int = Query(512, ge=64, le=2048),
+    arquivo: str | None = Query(None),
+    km_inicio: float | None = Query(None),
+    km_fim: float | None = Query(None),
+    qualidade: int = Query(85, ge=1, le=100),
+    settings: Settings = Depends(get_settings_dep),
+):
+    """Serve um tile JPEG em alta resolução (já rotacionado) do item do ICP.
+
+    O tile é recortado na imagem-fonte e rotacionado para a orientação do
+    display; o frontend só pede os tiles da viewport no zoom.
+    """
+    dados = _faixas_da_viagem(settings, viagem_nome)
+    if dados is None:
+        raise HTTPException(404, f"Viagem não encontrada: {viagem_nome}")
+    base, faixas = dados
+    if arquivo is None and (km_inicio is None or km_fim is None):
+        raise HTTPException(400, "Informe 'arquivo' ou 'km_inicio'/'km_fim'")
+    if arquivo is not None and ("/" in arquivo or "\\" in arquivo or ".." in arquivo):
+        raise HTTPException(400, "Nome de arquivo inválido")
+    if km_inicio is not None and km_fim is not None and km_fim <= km_inicio:
+        raise HTTPException(400, "'km_fim' deve ser maior que 'km_inicio'")
+
+    params = {"x": x, "y": y, "tamanho": tamanho, "qualidade": qualidade}
+    chave = icp_display.chave_cache(base, faixas, params, arquivo, km_inicio, km_fim)
+    caminho = _cache_display(base, chave, "tile")
+    if not caminho.is_file():
+        imagem = icp_display.imagem_fonte(base, faixas, arquivo, km_inicio, km_fim)
+        if imagem is None:
+            raise HTTPException(404, "Imagem não encontrada para o item solicitado")
+        jpg = icp_display.tile_jpeg(imagem, x, y, tamanho, qualidade)
+        if jpg is None:
+            raise HTTPException(404, "Tile fora dos limites da imagem")
+        caminho.write_bytes(jpg)
+    return _servir_do_cache(caminho, request, "image/jpeg")
 
 
 _BLOCO_20M_RE = re.compile(r"^lote_(\d+)_20m\.png$")

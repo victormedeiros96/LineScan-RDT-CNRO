@@ -1074,6 +1074,12 @@ exportar o laudo.
   CSV com uma linha por defeito (amostra, metadados, tipo/defeito, severidade,
   densidade, placas afetadas, VD) e as colunas de resumo (VDT, q, VDC, ICP,
   conceito).
+* **Visualização (RDT1-45)** — a visão geral usa um **thumbnail JPEG** comprimido
+  (`GET /api/pastas/imagem/{viagem}`, `largura_max`/`qualidade`), em vez do PNG
+  integral. Ao dar zoom, o viewer carrega **tiles JPEG já rotacionados** somente
+  da viewport (`GET /api/pastas/tile/{viagem}?x=&y=&tamanho=`), com cache em
+  disco. Vale só para o ICP; o IGG segue no seu próprio viewer. O seletor
+  "Inspeção (N placas)" vem com **2** como padrão.
 * **Erros** — a mensagem do backend é exibida sem alteração (ficha inválida,
   formato não suportado, viagem inexistente, banco indisponível). Sem inventário
   ou com zero placas, a tela avisa para revisar a calibração e sinaliza amostras

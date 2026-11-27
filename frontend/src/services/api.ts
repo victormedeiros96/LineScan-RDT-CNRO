@@ -182,6 +182,51 @@ export function getIntervaloUrl(
   return `/api/pastas/intervalo/${encodeURIComponent(viagemNome)}?${params.toString()}`
 }
 
+export interface ImagemItem {
+  arquivo?: string
+  kmInicio?: number
+  kmFim?: number
+}
+
+function paramsItemImagem(item: ImagemItem): URLSearchParams {
+  const params = new URLSearchParams()
+  if (item.arquivo) {
+    params.set('arquivo', item.arquivo)
+  } else {
+    if (item.kmInicio !== undefined) params.set('km_inicio', String(item.kmInicio))
+    if (item.kmFim !== undefined) params.set('km_fim', String(item.kmFim))
+  }
+  return params
+}
+
+export function getImagemUrl(
+  viagemNome: string,
+  item: ImagemItem,
+  larguraMax = 2048,
+  qualidade = 70,
+): string {
+  const params = paramsItemImagem(item)
+  params.set('largura_max', String(larguraMax))
+  params.set('qualidade', String(qualidade))
+  return `/api/pastas/imagem/${encodeURIComponent(viagemNome)}?${params.toString()}`
+}
+
+export function getTileUrl(
+  viagemNome: string,
+  item: ImagemItem,
+  x: number,
+  y: number,
+  tamanho = 512,
+  qualidade = 85,
+): string {
+  const params = paramsItemImagem(item)
+  params.set('x', String(x))
+  params.set('y', String(y))
+  params.set('tamanho', String(tamanho))
+  params.set('qualidade', String(qualidade))
+  return `/api/pastas/tile/${encodeURIComponent(viagemNome)}?${params.toString()}`
+}
+
 export async function executarInferencia(
   viagemNome: string,
   tipoModelo = 'igg',
