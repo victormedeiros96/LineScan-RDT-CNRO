@@ -382,6 +382,52 @@ def test_montar_blocos_com_rede_periodica_gera_placas_coerentes() -> None:
     assert r["n_detectadas_fora_rede"] == 1  # a de 2,0 m
 
 
+def test_montar_blocos_recalcula_km_apos_snap_da_rede() -> None:
+    """RDT1-47: o ``km`` da junta snapada tem de acompanhar o ``y`` da rede.
+
+    A detecção trazia ``km`` coerente com ``y = 0,4 m``; a rede de 5 m snapou
+    para ``y = 0``. Se o ``km`` antigo sobrevivesse, a linha da transversal
+    (km antigo) descolava da borda do bloco/polígono (y snapado) no viewer.
+    """
+    km0 = 100.0
+    y_detectada = _px(0.4)
+    transversais = [
+        {
+            "y": y_detectada,
+            "km": round(km0 + y_detectada * MM / 1_000_000.0, 6),
+            "angulo_graus": 0.0,
+            "x0": 0.0,
+            "x1": 4095.0,
+            "origem": "detectada",
+        },
+        {
+            "y": _px(5.3),
+            "km": round(km0 + _px(5.3) * MM / 1_000_000.0, 6),
+            "angulo_graus": 0.0,
+            "x0": 0.0,
+            "x1": 4095.0,
+            "origem": "detectada",
+        },
+    ]
+
+    r = icp_blocos.montar_blocos(
+        transversais,
+        km0=km0,
+        mm_por_px_y=MM,
+        retas_por_bloco={0: _retas()},
+        blocos_ranges=[(0, 0.0, _px(10.0))],
+        periodo_m=5.0,
+        fase_m=0.0,
+    )
+
+    juntas = r["transversais"]
+    assert [round(j["y"] / PX_POR_M, 3) for j in juntas[:2]] == [0.0, 5.0]
+    assert juntas[0]["km"] == pytest.approx(km0, abs=1e-6)
+    assert juntas[1]["km"] == pytest.approx(km0 + 0.005, abs=1e-6)
+    # A borda do bloco nasce do mesmo y => mesmo km da linha da junta.
+    assert r["blocos"][0]["km_inicio"] == pytest.approx(juntas[0]["km"], abs=1e-6)
+
+
 def test_montar_inventario_com_rede_periodica_aplica_na_calibracao() -> None:
     estrutura = {
         "transversais": _transversais(0.0, 2.0, 5.0, 10.0),
