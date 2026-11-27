@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import statistics
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -39,6 +40,8 @@ TOLERANCIA_JUNTA_M = 0.15
 # Junta transversal é perpendicular à via. Trincas diagonais não devem virar
 # transversal: rejeita ajuste com inclinação acima deste limite (graus).
 ANGULO_MAX_TRANSVERSAL = 20.0
+# Confiança da referência inicial do filtro sequencial de ângulo (RDT1-42).
+GANHO_REFERENCIA_ANGULO = 50.0
 
 
 def _selecionar_transversal(
@@ -99,6 +102,45 @@ def _agrupar_juntas(juntas: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return agrupadas
 
 
+def _corrigir_angulos(juntas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Suaviza a inclinação das transversais herdando o ângulo da anterior.
+
+    A inclinação é propriedade do scan (barra de referência), não de cada placa:
+    o detector às vezes devolve saltos espúrios (trincas diagonais, ruído) de
+    ±5–11° entre juntas consecutivas. Usa o filtro sequencial do
+    ``juntas-detector`` — ``reta_gpu.suavizar_angulos`` (README: "Filtro
+    sequencial do ângulo"): medição fraca (pouca cobertura lateral, ``_ganho``)
+    ou salto acima de ``salto_max`` herda o ângulo da junta anterior.
+
+    Corrige **só** ``angulo_graus``; ``km``/``y``/cobertura ficam intactos. As
+    juntas devem vir ordenadas ao longo da via. RDT1-42.
+    """
+    if len(juntas) < 2:
+        for junta in juntas:
+            junta.pop("_ganho", None)
+        return juntas
+    try:
+        from juntas_detector.reta_gpu import suavizar_angulos
+    except Exception:  # pacote antigo/sem o módulo: mantém o ângulo bruto
+        for junta in juntas:
+            junta.pop("_ganho", None)
+        return juntas
+
+    angulos = [float(junta.get("angulo_graus") or 0.0) for junta in juntas]
+    ganhos = [float(junta.pop("_ganho", 0.0) or 0.0) for junta in juntas]
+    # Semeia o filtro com a mediana: se a primeira medição for um pico isolado
+    # (o filtro do pacote começa em ``angulos[0]``), ela seria herdada por toda
+    # a sequência. A mediana só é usada como referência inicial.
+    referencia = float(statistics.median(angulos))
+    suaves, _ = suavizar_angulos(
+        [referencia, *angulos], [GANHO_REFERENCIA_ANGULO, *ganhos]
+    )
+    suaves = suaves[1:]
+    for junta, angulo in zip(juntas, suaves):
+        junta["angulo_graus"] = round(float(angulo), 6)
+    return juntas
+
+
 @dataclass(frozen=True)
 class ConfigJuntas:
     """Configuração do detector externo (``trinca-detector``)."""
@@ -108,6 +150,8 @@ class ConfigJuntas:
     limiar: float = LIMIAR_PADRAO
     ordem_invertida: bool = ORDEM_INVERTIDA_PADRAO
     mm_por_px_y: float = MM_POR_PX_Y_PADRAO
+    # Suaviza o ângulo das transversais herdando o anterior (RDT1-42).
+    corrigir_angulo: bool = True
 
     @property
     def disponivel(self) -> bool:
@@ -124,6 +168,7 @@ def carregar_config(
     limiar: float | None = None,
     ordem_invertida: bool | None = None,
     mm_por_px_y: float | None = None,
+    corrigir_angulo: bool | None = None,
 ) -> ConfigJuntas:
     """Monta a configuração a partir de ``modelos/icp/config.json`` + overrides.
 
@@ -154,6 +199,12 @@ def carregar_config(
         ),
         mm_por_px_y=float(
             bloco.get("mm_por_px_y", mm_por_px_y if mm_por_px_y is not None else MM_POR_PX_Y_PADRAO)
+        ),
+        corrigir_angulo=bool(
+            bloco.get(
+                "corrigir_angulo",
+                corrigir_angulo if corrigir_angulo is not None else True,
+            )
         ),
     )
 
@@ -279,10 +330,17 @@ def detectar_juntas_geometria(
                 "angulo_graus": float(junta.get("angulo_graus") or 0.0),
                 "x0": float(junta["t0"]),
                 "x1": float(junta["t1"]),
+                # Cobertura lateral = confiança para o filtro de ângulo.
+                "_ganho": float(junta.get("comprimento") or 0.0),
             }
         )
 
     juntas = _agrupar_juntas(juntas)
+    if config.corrigir_angulo:
+        juntas = _corrigir_angulos(juntas)
+    else:
+        for junta in juntas:
+            junta.pop("_ganho", None)
     return juntas
 
 
@@ -453,6 +511,7 @@ def detectar_estrutura(
 
         formas = modelo.detectar(strip)
         pontos = ProvedorTrincaDetector.para_pontos(formas, "junta")
+        inicio_transversais = len(transversais)
         if pontos:
             grupos_geo = geometria.agrupar(
                 pontos, largura=largura, altura=altura
@@ -480,8 +539,20 @@ def detectar_estrutura(
                         "x1": float(grupo["t1"]),
                         "origem": "detectada",
                         "bloco_indice": bloco_indice,
+                        # Cobertura lateral = confiança para o filtro de ângulo.
+                        "_ganho": float(grupo.get("comprimento") or 0.0),
                     }
                 )
+
+        # A inclinação é propriedade do scan: suaviza o ângulo dentro do bloco
+        # (herda o anterior em saltos espúrios), antes de fechar as placas.
+        juntas_bloco = transversais[inicio_transversais:]
+        juntas_bloco.sort(key=lambda t: float(t["y"]))
+        if config.corrigir_angulo:
+            _corrigir_angulos(juntas_bloco)
+        else:
+            for junta in juntas_bloco:
+                junta.pop("_ganho", None)
 
         provedor = _ProvedorFormas(formas)
         fragmentos = longitudinais.fragmentos_verticais(provedor, strip)
