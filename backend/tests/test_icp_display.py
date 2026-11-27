@@ -64,3 +64,31 @@ def test_imagem_fonte_monta_bloco_de_20m(tmp_path) -> None:
     assert fonte.shape[0] == 4 * altura
     assert int(fonte[0, 0, 0]) == 10  # topo = faixa 0 (menor KM)
     assert int(fonte[-1, 0, 0]) == 40
+
+
+def test_thumbnail_intervalo_reduz_e_respeita_largura_maxima(tmp_path) -> None:
+    import cv2
+
+    altura, largura = 100, 80
+    for i in range(2):
+        imagem = np.full((altura, largura, 3), 20 * (i + 1), dtype=np.uint8)
+        cv2.imwrite(str(tmp_path / f"lote_0001_faixa_{i}.png"), imagem)
+    faixas = [
+        {"arquivo": "lote_0001_faixa_0.png", "km_inicio": 0.0, "km_fim": 0.005, "altura_px": altura},
+        {"arquivo": "lote_0001_faixa_1.png", "km_inicio": 0.005, "km_fim": 0.010, "altura_px": altura},
+    ]
+
+    jpeg = icp_display.thumbnail_intervalo_jpeg(
+        tmp_path, faixas, 0.002, 0.008, largura_max=40, qualidade=70
+    )
+
+    assert jpeg is not None
+    assert jpeg[:2] == b"\xff\xd8"  # assinatura JPEG
+    volta = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+    assert max(volta.shape[:2]) <= 40
+    # 0,006 km a 1024 px/m = 6144 px de KM; reduzidos para caber em 40 px.
+    assert volta.shape[0] == 40
+
+
+def test_thumbnail_intervalo_sem_faixas_retorna_none(tmp_path) -> None:
+    assert icp_display.thumbnail_intervalo_jpeg(tmp_path, [], 0.0, 0.01) is None

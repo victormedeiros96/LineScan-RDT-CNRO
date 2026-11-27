@@ -351,6 +351,7 @@ export function IcpView() {
   const [imgSize, setImgSize] = useState<{ w: number; h: number } | null>(null)
   const [viewport, setViewport] = useState({ left: 0, top: 0, width: 0, height: 0 })
   const [tileVersion, setTileVersion] = useState(0)
+  const [carregandoImagem, setCarregandoImagem] = useState(false)
 
   const blocos = useMemo(() => agruparBlocos(faixas), [faixas])
 
@@ -522,24 +523,39 @@ export function IcpView() {
   }, [])
 
   useEffect(() => {
-    if (!faixaAtual || !viagemNome.trim()) return
+    if (!faixaAtual || !viagemNome.trim()) {
+      setCarregandoImagem(false)
+      return
+    }
     const url = getImagemUrl(viagemNome.trim(), itemDaFaixa(faixaAtual), 1024, 60)
     const cacheada = imgCacheRef.current.get(url)
     const img = cacheada ?? new Image()
+    let cancelado = false
+    const concluir = () => {
+      if (cancelado) return
+      setImgSize({ w: img.naturalWidth, h: img.naturalHeight })
+      desenharCanvas()
+      setCarregandoImagem(false)
+    }
     if (!cacheada) {
+      setCarregandoImagem(true)
       img.crossOrigin = 'anonymous'
       img.src = url
       imgCacheRef.current.set(url, img)
     }
     imgRef.current = img
-    if (img.complete && img.naturalWidth > 0) {
-      setImgSize({ w: img.naturalWidth, h: img.naturalHeight })
-      desenharCanvas()
+    if (img.complete) {
+      if (img.naturalWidth > 0) concluir()
+      else setCarregandoImagem(false)
     } else {
-      img.onload = () => {
-        setImgSize({ w: img.naturalWidth, h: img.naturalHeight })
-        desenharCanvas()
+      setCarregandoImagem(true)
+      img.onload = concluir
+      img.onerror = () => {
+        if (!cancelado) setCarregandoImagem(false)
       }
+    }
+    return () => {
+      cancelado = true
     }
   }, [faixaAtual, viagemNome, desenharCanvas])
 
@@ -607,6 +623,13 @@ export function IcpView() {
     }
     return tiles
   }, [zoom, faixaAtual, viewport, viagemNome])
+
+  useEffect(() => {
+    // Troca de item invalida os tiles em cache (URLs têm KM/arquivo, mas evita
+    // acumular imagens antigas e garante que só o item atual seja redesenhado).
+    tileCacheRef.current.clear()
+    setTileVersion((v) => v + 1)
+  }, [faixaAtual])
 
   useEffect(() => {
     const canvas = tileCanvasRef.current
@@ -1422,6 +1445,11 @@ export function IcpView() {
               >
                 <canvas ref={canvasRef} />
                 <canvas ref={tileCanvasRef} className="annotation-tile-layer" />
+                {carregandoImagem && (
+                  <div className="annotation-loading" role="status" aria-live="polite">
+                    Carregando imagem…
+                  </div>
+                )}
                 <svg
                   className="annotation-svg-layer"
                   viewBox={`0 0 ${faixaAtual?.altura_px ?? 5120} 4096`}

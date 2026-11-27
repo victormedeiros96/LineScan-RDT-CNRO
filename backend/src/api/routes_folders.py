@@ -458,7 +458,7 @@ def _recortar_intervalo(
 
 
 @router.get("/intervalo/{viagem_nome}")
-async def servir_intervalo(
+def servir_intervalo(
     viagem_nome: str,
     km_inicio: float = Query(..., description="KM inicial do recorte"),
     km_fim: float = Query(..., description="KM final do recorte"),
@@ -503,7 +503,7 @@ def _servir_do_cache(caminho: Path, request: Request, media_type: str) -> Respon
 
 
 @router.get("/imagem/{viagem_nome}")
-async def servir_imagem(
+def servir_imagem(
     viagem_nome: str,
     request: Request,
     arquivo: str | None = Query(None, description="Faixa/bloco (ex.: lote_0001_20m.png)"),
@@ -533,15 +533,17 @@ async def servir_imagem(
     chave = icp_display.chave_cache(base, faixas, params, arquivo, km_inicio, km_fim)
     caminho = _cache_display(base, chave, "thumb")
     if not caminho.is_file():
-        imagem = icp_display.imagem_fonte(base, faixas, arquivo, km_inicio, km_fim)
-        if imagem is None:
+        jpg = icp_display.thumbnail_item_jpeg(
+            base, faixas, arquivo, km_inicio, km_fim, largura_max, qualidade
+        )
+        if jpg is None:
             raise HTTPException(404, "Imagem não encontrada para o item solicitado")
-        caminho.write_bytes(icp_display.thumbnail_jpeg(imagem, largura_max, qualidade))
+        caminho.write_bytes(jpg)
     return _servir_do_cache(caminho, request, "image/jpeg")
 
 
 @router.get("/tile/{viagem_nome}")
-async def servir_tile(
+def servir_tile(
     viagem_nome: str,
     request: Request,
     x: int = Query(..., ge=0, description="Coordenada X no display (KM)"),

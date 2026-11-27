@@ -1091,6 +1091,11 @@ exportar o laudo.
   revela detalhe nativo em vez de esticar um bitmap de resolução fixa. Vale só
   para o ICP; o IGG segue no seu próprio viewer. O seletor "Inspeção (N placas)"
   vem com **2** como padrão.
+* **Troca de N no modo Inspeção (RDT1-48)** — o thumbnail do intervalo é reduzido
+  trecho a trecho ao ler as faixas (não empilha mais em resolução integral), então
+  mudar o número de placas é bem mais leve; os endpoints de imagem/tile/intervalo
+  rodam no threadpool (não bloqueiam o event loop) e o viewer mostra
+  "Carregando imagem…" enquanto o novo recorte chega.
 * **Erros** — a mensagem do backend é exibida sem alteração (ficha inválida,
   formato não suportado, viagem inexistente, banco indisponível). Sem inventário
   ou com zero placas, a tela avisa para revisar a calibração e sinaliza amostras
