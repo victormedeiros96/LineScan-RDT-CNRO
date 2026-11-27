@@ -210,6 +210,10 @@ def aplicar_rede_periodica(
         if escolhida is not None:
             junta = dict(escolhida)
             junta["y"] = linha
+            # O ``km`` antigo correspondia ao y da detecção; ao snapar o y na
+            # rede ele fica defasado da borda do bloco/polígono. Remove para
+            # ``montar_blocos`` recalcular a partir do y efetivo (RDT1-47).
+            junta.pop("km", None)
             junta["origem"] = "detectada"
         else:
             junta = {"y": linha, "origem": "virtual", **_herdar(indice)}
