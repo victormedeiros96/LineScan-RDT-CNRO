@@ -153,6 +153,50 @@ function placaNaFaixa(placa: IcpPlaca, faixa: FaixaInfo): Retangulo | null {
   return paraCanvas(x1, y1, x2, y2, faixa.altura_px)
 }
 
+const LATERAL_PX_POR_M = 1024
+
+interface PontoCanvas {
+  x: number
+  y: number
+}
+
+/**
+ * Polígono da placa no canvas rotacionado. Usa ``poligono_m`` (as quatro pontas
+ * medidas entre as transversais) para que a área acompanhe a inclinação real das
+ * juntas — o retângulo alinhado aos eixos desenhava a placa reta e deslocada em
+ * relação à linha da transversal.
+ */
+function poligonoNaFaixa(placa: IcpPlaca, faixa: FaixaInfo): PontoCanvas[] | null {
+  if (faixa.km_inicio === null || faixa.km_fim === null) return null
+  const alturaKm = faixa.km_fim - faixa.km_inicio
+  if (alturaKm <= 0 || faixa.altura_px <= 0) return null
+  const inicioKm = faixa.km_inicio
+
+  const converter = (km: number, lateralPx: number): PontoCanvas => ({
+    x: faixa.altura_px - ((km - inicioKm) / alturaKm) * faixa.altura_px,
+    y: lateralPx,
+  })
+
+  if (placa.poligono_m && placa.poligono_m.length >= 3) {
+    return placa.poligono_m.map((ponto) =>
+      converter(ponto.km, ponto.x_m * LATERAL_PX_POR_M),
+    )
+  }
+
+  const retangulo = placaNaFaixa(placa, faixa)
+  if (!retangulo) return null
+  return [
+    { x: retangulo.x, y: retangulo.y },
+    { x: retangulo.x + retangulo.width, y: retangulo.y },
+    { x: retangulo.x + retangulo.width, y: retangulo.y + retangulo.height },
+    { x: retangulo.x, y: retangulo.y + retangulo.height },
+  ]
+}
+
+function pontosSvg(pontos: PontoCanvas[]): string {
+  return pontos.map((ponto) => `${ponto.x},${ponto.y}`).join(' ')
+}
+
 interface BlocoInfo extends FaixaInfo {
   faixas: FaixaInfo[]
 }
@@ -477,11 +521,13 @@ export function IcpView() {
       })
   }, [juntasGeometria, faixaAtual])
 
-  const retangulosPlacas = useMemo(() => {
-    if (!faixaAtual) return [] as Retangulo[]
+  const poligonosPlacas = useMemo(() => {
+    if (!faixaAtual) return [] as { placa: IcpPlaca; pontos: PontoCanvas[] }[]
     return placasDaFaixa
-      .map((placa) => placaNaFaixa(placa, faixaAtual))
-      .filter((retangulo): retangulo is Retangulo => retangulo !== null)
+      .map((placa) => ({ placa, pontos: poligonoNaFaixa(placa, faixaAtual) }))
+      .filter(
+        (item): item is { placa: IcpPlaca; pontos: PontoCanvas[] } => item.pontos !== null,
+      )
   }, [faixaAtual, placasDaFaixa])
 
   const resumo = useMemo(() => {
@@ -1465,13 +1511,10 @@ export function IcpView() {
                             height={4096}
                             fill="white"
                           />
-                          {retangulosPlacas.map((retangulo, index) => (
-                            <rect
-                              key={`foco-${index}`}
-                              x={retangulo.x}
-                              y={retangulo.y}
-                              width={retangulo.width}
-                              height={retangulo.height}
+                          {poligonosPlacas.map(({ placa, pontos }, index) => (
+                            <polygon
+                              key={`foco-${placa.id}-${index}`}
+                              points={pontosSvg(pontos)}
                               fill="black"
                             />
                           ))}
@@ -1542,19 +1585,16 @@ export function IcpView() {
                       </g>
                     )
                   })}
-                  {placasDaFaixa.map((placa) => {
-                    const rect = placaNaFaixa(placa, faixaAtual ?? faixasComPlacas[0])
-                    if (!rect) return null
+                  {poligonosPlacas.map(({ placa, pontos }) => {
                     const cor = corAmostra(placa.amostra_id)
                     const selecionada = placa.id === placaSelecionada
                     const virtual = placaVirtual(placa)
+                    const rotuloX = Math.min(...pontos.map((ponto) => ponto.x)) + 16
+                    const rotuloY = Math.min(...pontos.map((ponto) => ponto.y)) + 42
                     return (
                       <g key={placa.id}>
-                        <rect
-                          x={rect.x}
-                          y={rect.y}
-                          width={rect.width}
-                          height={rect.height}
+                        <polygon
+                          points={pontosSvg(pontos)}
                           fill={selecionada ? `${cor}55` : 'transparent'}
                           stroke={cor}
                           strokeWidth={selecionada ? 7 : 3}
@@ -1566,10 +1606,10 @@ export function IcpView() {
                             {placa.id} · {formatarNumero(placa.comprimento_m, 2)} m
                             {virtual ? ' · fechado com linha virtual' : ''}
                           </title>
-                        </rect>
+                        </polygon>
                         <text
-                          x={rect.x + 16}
-                          y={rect.y + 42}
+                          x={rotuloX}
+                          y={rotuloY}
                           fill={cor}
                           fontSize={38}
                           fontWeight={800}

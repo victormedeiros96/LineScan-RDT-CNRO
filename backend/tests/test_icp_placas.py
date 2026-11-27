@@ -5,6 +5,7 @@ BR-364 (pista sul, faixa 2) e são a validação de referência desta etapa.
 """
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import cv2
@@ -355,6 +356,32 @@ def test_juntas_detectadas_geram_placas_com_tamanhos_variaveis() -> None:
     largura_esperada = 4095 * 0.9765625 / 1000.0
     assert all(p["largura_m"] == pytest.approx(largura_esperada, abs=1e-3) for p in placas)
     assert placas[0]["faixa"] == "lote_0000_faixa_0.png"
+
+
+def test_juntas_inclinadas_geram_poligono_inclinado() -> None:
+    """RDT1-47: o polígono da placa segue o ângulo da transversal.
+
+    O display do ICP passou a desenhar ``poligono_m`` (e não o retângulo
+    alinhado aos eixos), então as duas pontas de uma mesma junta precisam
+    refletir a inclinação medida — senão a área do bloco fica reta e deslocada
+    em relação à linha da transversal.
+    """
+    km0 = 100.0
+    angulo = 8.0
+    juntas = [
+        {"km": km0, "angulo_graus": angulo, "x0": 0.0, "x1": 4095.0},
+        {"km": km0 + 0.00512, "angulo_graus": angulo, "x0": 0.0, "x1": 4095.0},
+    ]
+
+    placas, descartadas = gerar_placas_por_juntas(_faixas(km_inicio=km0), juntas)
+
+    assert descartadas == []
+    # Ordem do polígono: (junta A, x_esq), (junta A, x_dir), (junta B, ...).
+    esquerda, direita = placas[0]["poligono_m"][:2]
+    largura_m = 4095 * 0.9765625 / 1000.0
+    defasagem_km = largura_m * math.tan(math.radians(angulo)) / 1000.0
+    assert direita["km"] - esquerda["km"] == pytest.approx(defasagem_km, abs=1e-4)
+    assert defasagem_km * 1000.0 > 0.1
 
 
 def test_juntas_detectadas_sem_sobreposicao_lateral_sao_descartadas() -> None:

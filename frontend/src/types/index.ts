@@ -195,6 +195,11 @@ export interface IcpPontoFaixa {
   y: number
 }
 
+export interface IcpPontoMetro {
+  x_m: number
+  km: number
+}
+
 export interface IcpPlaca {
   id: string
   km: number
@@ -208,6 +213,7 @@ export interface IcpPlaca {
   faixas: string[]
   poligono: number[][]
   pontos_faixa: IcpPontoFaixa[]
+  poligono_m?: IcpPontoMetro[]
   amostra_id: string
   roi?: { arquivo: string; x: number; y: number; largura: number; altura: number }
   fechado?: boolean
