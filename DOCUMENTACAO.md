@@ -810,12 +810,19 @@ O caminho preferido do job do rígido (quando não há calibração manual) roda
    (`x = a·y + b`, convertido para o `y` global pela origem do bloco). O
    offset do bloco converte `km` em px com `×1.000×PX_POR_METRO` (RDT1-36);
    sem o fator 1.000 as juntas de todos os blocos caem no início da viagem.
-   A **inclinação** da transversal (`angulo_graus`) passa pelo filtro sequencial
-   de ângulo do `juntas-detector` (`reta_gpu.suavizar_angulos`, RDT1-42): como a
-   inclinação é propriedade do scan e não de cada placa, medições fracas ou
-   saltos acima de 3° herdam o ângulo da junta anterior (referência inicial pela
-   mediana). Isso evita que ruído/trincas diagonais deem ±5–11° e torçam a borda
-   do bloco; ligado por `corrigir_angulo` em `modelos/icp/config.json`.
+   A **inclinação** da transversal (`angulo_graus`) sai do strip cru
+   **anisotrópico** (512 px/m no KM, 1024 px/m na lateral) e é convertida para
+   o display isotrópico multiplicando `tan(ângulo)` por `escala` (RDT1-46;
+   antes era dividido, o que encolhia a inclinação e deslocava a borda do
+   bloco). Como a inclinação é propriedade do scan e não de cada placa, as
+   medições são uniformizadas pela **mediana robusta do bloco**: o
+   `reta_gpu.suavizar_angulos` do pacote precisa do ganho de intensidade (p90),
+   que o `geometria.agrupar` não fornece — usar a cobertura lateral como ganho
+   deixava o filtro sem efeito. Isso evita que ruído/trincas diagonais deem
+   ±5–11° e torçam a borda do bloco, sem deslocar o centro da junta (o `km` é
+   preservado). Ligado por `corrigir_angulo` em `modelos/icp/config.json`. O
+   viewer do ICP desenha a transversal com essa inclinação (não mais uma linha
+   vertical no centro), então a linha e a borda do bloco coincidem (RDT1-46).
 3. **Cruzamento** — `placas.poligonos` fecha cada bloco entre duas transversais
    consecutivas e as duas longitudinais. Cada bloco tem id (`P0001`…),
    contorno/máscara, `origem_juntas` e `origem_largura`

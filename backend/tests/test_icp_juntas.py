@@ -341,27 +341,38 @@ def test_strip_do_bloco_prefere_arquivo_cru(tmp_path: Path) -> None:
     assert escala == pytest.approx(2.0)
 
 
-def test_corrigir_angulos_descarta_saltos_espurios() -> None:
-    """RDT1-42: ângulo é do scan; saltos >3° herdam o ângulo da junta anterior."""
-    # Primeiro valor é um pico isolado (43,9°): o seed pela mediana evita
-    # que ele seja herdado por toda a sequência.
+def test_angulo_para_display_multiplica_pela_escala_anisotropica() -> None:
+    """RDT1-46: tan(ângulo) é escalado por ``escala`` (y do cru → display)."""
+    esperado = np.degrees(np.arctan(2.0 * np.tan(np.radians(1.0))))
+
+    assert icp_juntas._angulo_para_display(1.0, 2.0) == pytest.approx(esperado)
+    # O bug antigo dividia pela escala e encolhia a inclinação.
+    assert icp_juntas._angulo_para_display(1.0, 2.0) > 1.0
+    assert icp_juntas._angulo_para_display(2.0, 1.0) == pytest.approx(2.0)
+
+
+def test_corrigir_angulos_usa_mediana_e_preserva_posicao() -> None:
+    """RDT1-46: ângulo vira a mediana do trecho; km/x0/x1/y não se deslocam."""
     angles = [43.9, 0.9, 1.0, 10.3, 1.3, 0.9, 5.9, -5.6, 1.8, 1.4, 11.5]
     juntas = [
-        {"y": float(i), "angulo_graus": a, "_ganho": 4000.0}
+        {"y": float(i), "km": 100.0 + i / 1000.0, "x0": 0.0, "x1": 4095.0,
+         "angulo_graus": a}
         for i, a in enumerate(angles)
     ]
 
     icp_juntas._corrigir_angulos(juntas)
 
-    corrigidos = [j["angulo_graus"] for j in juntas]
-    # O valor físico (~1°) é preservado; os picos de ±5–11° somem.
-    assert max(corrigidos) < 2.0
-    assert min(corrigidos) > 0.5
-    assert all("_ganho" not in j for j in juntas)
+    mediana = float(np.median(angles))
+    assert all(j["angulo_graus"] == pytest.approx(mediana) for j in juntas)
+    assert [j["y"] for j in juntas] == [float(i) for i in range(len(angles))]
+    assert [j["km"] for j in juntas] == pytest.approx(
+        [100.0 + i / 1000.0 for i in range(len(angles))]
+    )
+    assert all(j["x0"] == 0.0 and j["x1"] == 4095.0 for j in juntas)
 
 
-def test_corrigir_angulos_ignora_lista_curta() -> None:
-    juntas = [{"y": 0.0, "angulo_graus": 7.0, "_ganho": 10.0}]
+def test_corrigir_angulos_lista_curta_nao_altera() -> None:
+    juntas = [{"y": 0.0, "angulo_graus": 7.0}]
 
     assert icp_juntas._corrigir_angulos(juntas) == [{"y": 0.0, "angulo_graus": 7.0}]
 
