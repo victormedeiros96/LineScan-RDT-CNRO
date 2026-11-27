@@ -2349,7 +2349,6 @@ html.light body {
 }
 
 .icp-resultados-card,
-.icp-placas-card,
 .icp-overlay-card {
   margin-bottom: 1rem;
 }
@@ -2424,22 +2423,6 @@ html.light body {
   margin: 0.35rem 0;
   color: var(--text-secondary);
   font-size: 0.8rem;
-}
-
-.icp-placas-form {
-  display: flex;
-  align-items: flex-end;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-  margin-top: 0.85rem;
-}
-
-.icp-placas-form .form-group {
-  min-width: 120px;
-}
-
-.icp-placas-form .form-group input {
-  width: 100%;
 }
 
 .icp-inventario-resumo {

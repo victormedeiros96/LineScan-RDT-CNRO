@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from src.core.config import Settings
 from src.core.dependencies import get_settings_dep
 from src.main import app
-from src.services import resultado_store
+from src.services import icp_placas, resultado_store
 from src.services.icp_calculator import calcular_icp_amostra
 
 
@@ -64,17 +64,17 @@ def client_viagem(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         app.dependency_overrides.clear()
 
 
-def _gerar_inventario(client: TestClient) -> None:
-    resposta = client.post(
-        "/api/relatorios/icp/BR-364/placas",
-        json={"periodo_m": 5.12, "gerar_rois": False},
+def _gerar_inventario(viagem: Path) -> None:
+    faixas = icp_placas.listar_faixas(viagem)
+    inventario = icp_placas.montar_inventario(
+        faixas, periodo_m=5.12, fase_m=0.0
     )
-    assert resposta.status_code == 200, resposta.text
+    icp_placas.salvar_inventario(viagem, inventario)
 
 
 def test_marcacao_recalcula_amostra_e_persiste(client_viagem) -> None:
     client, viagem, estado = client_viagem
-    _gerar_inventario(client)
+    _gerar_inventario(viagem)
 
     resposta = client.post(
         "/api/relatorios/icp/BR-364/marcacoes",
@@ -101,7 +101,7 @@ def test_marcacao_recalcula_amostra_e_persiste(client_viagem) -> None:
 
 def test_marcacao_duplicada_e_conflito(client_viagem) -> None:
     client, _viagem, _estado = client_viagem
-    _gerar_inventario(client)
+    _gerar_inventario(_viagem)
     payload = {"placa_id": "P0001", "tipo": 2, "severidade": "M"}
     assert client.post("/api/relatorios/icp/BR-364/marcacoes", json=payload).status_code == 200
     duplicada = client.post("/api/relatorios/icp/BR-364/marcacoes", json=payload)
@@ -110,7 +110,7 @@ def test_marcacao_duplicada_e_conflito(client_viagem) -> None:
 
 def test_remove_marcacao_com_soft_delete(client_viagem) -> None:
     client, _viagem, _estado = client_viagem
-    _gerar_inventario(client)
+    _gerar_inventario(_viagem)
     criada = client.post(
         "/api/relatorios/icp/BR-364/marcacoes",
         json={"placa_id": "P0001", "tipo": 7, "severidade": "B"},
@@ -132,7 +132,7 @@ def test_remove_marcacao_com_soft_delete(client_viagem) -> None:
 
 def test_marcacao_soma_a_ficha_importada(client_viagem) -> None:
     client, viagem, estado = client_viagem
-    _gerar_inventario(client)
+    _gerar_inventario(viagem)
     estado["resultados"].append(
         {
             "amostra": "A001",

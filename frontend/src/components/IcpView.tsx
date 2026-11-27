@@ -8,7 +8,6 @@ import {
   getIcpExportUrl,
   getIcpLaudoCsvUrl,
   getIcpRecorteUrl,
-  gerarPlacasIcp,
   importarFichaIcp,
   listarFaixas,
   listarIcp,
@@ -295,17 +294,10 @@ export function IcpView() {
 
   const [carregando, setCarregando] = useState(false)
   const [importando, setImportando] = useState(false)
-  const [gerando, setGerando] = useState(false)
   const [exportando, setExportando] = useState(false)
   const [erro, setErro] = useState('')
   const [aviso, setAviso] = useState('')
   const [mensagemImport, setMensagemImport] = useState('')
-
-  const [periodo, setPeriodo] = useState('5.12')
-  const [fase, setFase] = useState('0')
-  const [larguraPlaca, setLarguraPlaca] = useState('3.6')
-  const [comprimentoMax, setComprimentoMax] = useState('9')
-  const [tamanhoAmostra, setTamanhoAmostra] = useState('20')
 
   const [expandidos, setExpandidos] = useState<Set<string>>(new Set())
   const [faixaSelecionada, setFaixaSelecionada] = useState('')
@@ -590,46 +582,6 @@ export function IcpView() {
       if (fileInputRef.current) fileInputRef.current.value = ''
     }
   }, [viagemNome])
-
-  const aoGerarPlacas = useCallback(async () => {
-    const nome = viagemNome.trim()
-    if (!nome) {
-      setErro('Informe o nome da viagem antes de gerar as placas.')
-      return
-    }
-    const periodoNum = Number(periodo.replace(',', '.'))
-    if (!Number.isFinite(periodoNum) || periodoNum <= 0) {
-      setErro('Informe um período de juntas (m) válido, maior que zero.')
-      return
-    }
-    setGerando(true)
-    setErro('')
-    setAviso('')
-    try {
-      const resposta = await gerarPlacasIcp(nome, {
-        periodo_m: periodoNum,
-        fase_m: Number(fase.replace(',', '.')) || 0,
-        largura_placa_m: Number(larguraPlaca.replace(',', '.')) || undefined,
-        comprimento_max_m: Number(comprimentoMax.replace(',', '.')) || undefined,
-        tamanho_amostra: Number(tamanhoAmostra) || undefined,
-      })
-      if (resposta.inventario) {
-        setInventario(resposta.inventario)
-      } else {
-        setInventario(await obterPlacasIcp(nome))
-      }
-      const faixasViagem = await listarFaixas(nome).catch(() => [] as FaixaInfo[])
-      setFaixas(faixasViagem)
-      const totalPlacas = Number(resposta.total_placas ?? resposta.inventario?.placas.length ?? 0)
-      if (totalPlacas === 0) {
-        setAviso('O inventário foi gerado, mas nenhuma placa válida foi encontrada neste trecho.')
-      }
-    } catch (err: unknown) {
-      setErro(mensagemErro(err))
-    } finally {
-      setGerando(false)
-    }
-  }, [viagemNome, periodo, fase, larguraPlaca, comprimentoMax, tamanhoAmostra])
 
   const aoExportar = useCallback(async () => {
     const nome = viagemNome.trim()
@@ -1182,80 +1134,43 @@ export function IcpView() {
         </div>
       )}
 
-      <div className="card icp-placas-card">
-        <div className="grid-header">
-          <div>
-            <h3>Inventário de placas</h3>
-            <p className="description">
-              Gere as ROIs de placa a partir da calibração das juntas (período e fase do trecho).
-            </p>
-          </div>
-        </div>
-
-        <div className="icp-placas-form">
-          <div className="form-group compact">
-            <label>Período (m)</label>
-            <input type="text" value={periodo} onChange={(e) => setPeriodo(e.target.value)} />
-          </div>
-          <div className="form-group compact">
-            <label>Fase (m)</label>
-            <input type="text" value={fase} onChange={(e) => setFase(e.target.value)} />
-          </div>
-          <div className="form-group compact">
-            <label>Largura da placa (m)</label>
-            <input type="text" value={larguraPlaca} onChange={(e) => setLarguraPlaca(e.target.value)} />
-          </div>
-          <div className="form-group compact">
-            <label>Comprimento máx. (m)</label>
-            <input type="text" value={comprimentoMax} onChange={(e) => setComprimentoMax(e.target.value)} />
-          </div>
-          <div className="form-group compact">
-            <label>Placas por amostra</label>
-            <input type="text" value={tamanhoAmostra} onChange={(e) => setTamanhoAmostra(e.target.value)} />
-          </div>
-          <button className="btn btn-primary" onClick={aoGerarPlacas} disabled={gerando}>
-            {gerando ? 'Gerando...' : 'Gerar / atualizar placas'}
-          </button>
-        </div>
-
-        {inventario && (
-          <div className="icp-inventario-resumo">
-            <span>
-              <strong>{inventario.placas.length}</strong> placas ·{' '}
-              <strong>{inventario.amostras.length}</strong> amostras
-              {inventario.trecho ? ` · KM ${formatarNumero(inventario.trecho.km_inicio, 3)} a ${formatarNumero(inventario.trecho.km_fim, 3)}` : ''}
+      {inventario && (
+        <div className="icp-inventario-resumo">
+          <span>
+            <strong>{inventario.placas.length}</strong> placas ·{' '}
+            <strong>{inventario.amostras.length}</strong> amostras
+            {inventario.trecho ? ` · KM ${formatarNumero(inventario.trecho.km_inicio, 3)} a ${formatarNumero(inventario.trecho.km_fim, 3)}` : ''}
+          </span>
+          {inventario.descartadas.length > 0 && (
+            <span className="icp-aviso">
+              {inventario.descartadas.length} placas descartadas na montagem dos blocos.
             </span>
-            {inventario.descartadas.length > 0 && (
-              <span className="icp-aviso">
-                {inventario.descartadas.length} placas descartadas pela calibração.
-              </span>
-            )}
-            {(inventario.blocos_sem_mascara?.length ?? 0) > 0 && (
-              <span className="icp-erro">
-                {inventario.blocos_sem_mascara?.length} blocos sem máscara (junta/vão
-                incoerente):{' '}
-                {inventario.blocos_sem_mascara
-                  ?.slice(0, 6)
-                  .map((bloco) => `KM ${formatarNumero(bloco.km_inicio, 3)}`)
-                  .join(', ')}
-              </span>
-            )}
-            {(inventario.avisos?.length ?? 0) > 0 && (
-              <span className="icp-aviso">{inventario.avisos?.[0]}</span>
-            )}
-            {amostrasSemPlacas.length > 0 && (
-              <span className="icp-erro">
-                {amostrasSemPlacas.length} amostras sem placas: {amostrasSemPlacas.map((a) => a.id).join(', ')}.
-              </span>
-            )}
-            {inventario.placas.length === 0 && (
-              <span className="icp-erro">
-                Nenhuma placa gerada. Confira o período/fase e se as faixas da viagem existem.
-              </span>
-            )}
-          </div>
-        )}
-      </div>
+          )}
+          {(inventario.blocos_sem_mascara?.length ?? 0) > 0 && (
+            <span className="icp-erro">
+              {inventario.blocos_sem_mascara?.length} blocos sem máscara (junta/vão
+              incoerente):{' '}
+              {inventario.blocos_sem_mascara
+                ?.slice(0, 6)
+                .map((bloco) => `KM ${formatarNumero(bloco.km_inicio, 3)}`)
+                .join(', ')}
+            </span>
+          )}
+          {(inventario.avisos?.length ?? 0) > 0 && (
+            <span className="icp-aviso">{inventario.avisos?.[0]}</span>
+          )}
+          {amostrasSemPlacas.length > 0 && (
+            <span className="icp-erro">
+              {amostrasSemPlacas.length} amostras sem placas: {amostrasSemPlacas.map((a) => a.id).join(', ')}.
+            </span>
+          )}
+          {inventario.placas.length === 0 && (
+            <span className="icp-erro">
+              Nenhuma placa encontrada. Confira a detecção de juntas e se as faixas da viagem existem.
+            </span>
+          )}
+        </div>
+      )}
 
       {inventario && faixasComPlacas.length > 0 && (
         <div className="card icp-overlay-card">
